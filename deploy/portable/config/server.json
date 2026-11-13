@@ -1,0 +1,9 @@
+{
+  "Urls": "http://127.0.0.1:5188",
+  "AllowedHosts": "localhost;127.0.0.1;[::1]",
+  "DataDirectory": "../data",
+  "LogDirectory": "../logs",
+  "Workflows": { "MaxParallelJobs": 2 },
+  "WindowsAuthentication": { "Enabled": true, "AutoSignIn": false },
+  "FileLogging": { "ConsoleEnabled": false }
+}
