@@ -317,20 +317,26 @@ async function openRefreshDialog(row) {
   try {
     const options = await api(`/api/refresh/options?database=${encodeURIComponent(row.name)}`);
     const sources = options.copySources || [];
-    flow.refresh = { row, options, shrink: false };
+    const shrink = options.shrinkBackup;
+    const shrinkSize = shrink ? `${(shrink.size / 1024 ** 3).toLocaleString("ru-RU", { maximumFractionDigits: 3 })} ГБ` : "";
+    const archiveDate = options.backupDate ? `Данные на ${shrinkDataDate(options.backupDate)}`
+      : options.backupModifiedAt ? `Файл изменён ${formatDate(options.backupModifiedAt)}` : "Дата недоступна";
+    flow.refresh = { row, options };
     dialog.innerHTML = `<form id="refresh-form"><div class="eyebrow">Актуализация базы</div><h2 id="dialog-title" class="mono">${esc(row.name)}</h2>
       <div class="field"><label for="refresh-source-mode">Источник актуализации</label><select id="refresh-source-mode" name="sourceMode" required>
-        <option value="archive" ${options.backupName || options.shrinkBackup || !sources.length ? "selected" : ""}>Архив из папки${options.backupName ? "" : " · полный бэкап недоступен"}</option>
-        <option value="database" ${sources.length ? (options.backupName || options.shrinkBackup ? "" : "selected") : "disabled"}>Другая Dev-база${sources.length ? "" : " · нет доступных баз"}</option>
-      </select>${options.backupUnavailableReason ? `<small>${esc(options.backupUnavailableReason)}</small>` : ""}</div>
-      <div id="refresh-archive-source" class="detail-row"><span>Резервный файл</span><strong>${esc(options.backupName)}</strong></div>
+        <option value="shrink" ${shrink ? "selected" : "disabled"}>Архив из папки (shrink)${shrink ? ` · ${esc(shrinkSize)}` : " · недоступен"}</option>
+        <option value="archive" ${shrink ? "" : "selected"}>Архив из папки (полный)</option>
+        <option value="database" ${sources.length ? "" : "disabled"}>Другая Dev-база${sources.length ? "" : " · нет доступных баз"}</option>
+      </select></div>
+      <div class="detail-row"><span>Дата данных Shrink-копии</span><strong>${shrink ? esc(shrinkDataDate(shrink.dataDate)) : "Копии пока нет"}</strong></div>
+      <div class="detail-row"><span>Полный архив</span><strong>${options.backupName ? `${esc(archiveDate)}<small>${esc(options.backupName)}</small>`
+        : esc(options.backupUnavailableReason || "Архив недоступен")}</strong></div>
       <div id="refresh-database-source" class="field" hidden><label for="refresh-source-database">База-источник</label>
         <select id="refresh-source-database" name="sourceDatabase" disabled><option value="">Выберите базу того же типа</option>
           ${sources.map(source => `<option value="${esc(source.name)}">${esc(source.name)}${source.sizeBytes == null ? "" : ` · ${esc(formatSize(source.sizeBytes))}`}</option>`).join("")}
         </select><small>Источник остаётся доступным. При активных записях разные таблицы копии могут отражать разные моменты.</small></div>
       <div class="detail-row"><span>Активные SQL-соединения базы назначения</span><strong>${options.activeSessions}</strong></div>
-      <div class="dialog-options"><label class="checkbox"><input id="refresh-shrink" name="shrink" type="checkbox"><span>Восстановить готовую Shrink-копию<small id="refresh-shrink-notice"></small></span></label>
-      <label class="checkbox"><input type="checkbox" disabled><span>Заменить персональные данные <small> · пока недоступно</small></span></label></div>
+      <div class="dialog-options"><label class="checkbox"><input type="checkbox" disabled><span>Заменить персональные данные <small> · пока недоступно</small></span></label></div>
       <div class="notice"><p id="refresh-publish-notice"></p></div>
       <label class="checkbox"><input name="confirmDisconnect" type="checkbox" ${options.activeSessions > 0 ? "required" : ""}><span>Разрешаю завершить открытые SQL-соединения этой базы при запуске</span></label>
       <label class="checkbox confirm-replace"><input name="confirmReplace" type="checkbox" required><span>Подтверждаю замену содержимого ${esc(row.name)}</span></label>
@@ -348,29 +354,28 @@ async function openRefreshDialog(row) {
 }
 
 function syncRefreshSource(form) {
-  const refresh = flow.refresh;
-  const copy = form.elements.sourceMode.value === "database";
+  const { options } = flow.refresh;
+  const mode = form.elements.sourceMode;
+  const scheduled = !form.elements.runNow.checked;
+  const shrinkAvailable = Boolean(options.shrinkBackup || (scheduled && options.shrinkConfigured));
+  mode.options[0].disabled = !shrinkAvailable;
+  if (mode.value === "shrink" && !shrinkAvailable) mode.value = "archive";
+  const copy = mode.value === "database";
+  const shrink = mode.value === "shrink";
   const source = form.elements.sourceDatabase;
   source.disabled = !copy;
   source.required = copy;
-  refresh.sourceDatabase = copy ? source.value : null;
-  const ready = refresh.options.shrinkBackup;
-  const scheduled = !form.elements.runNow.checked;
-  form.elements.shrink.disabled = copy || (!ready && !(scheduled && refresh.options.shrinkConfigured));
-  if (form.elements.shrink.disabled) form.elements.shrink.checked = false;
-  refresh.shrink = form.elements.shrink.checked;
-  form.querySelector("#refresh-archive-source").hidden = copy || refresh.shrink || !refresh.options.backupName;
+  if (!options.shrinkBackup)
+    mode.options[0].textContent = `Архив из папки (shrink)${shrinkAvailable ? " · копия ожидается" : " · недоступен"}`;
   form.querySelector("#refresh-database-source").hidden = !copy;
   form.querySelector("#refresh-publish-notice").textContent = copy
     ? "База назначения заменяется после подготовки копии."
-    : refresh.shrink ? "В базу назначения заливается готовая копия, подготовленная по профилю администратора."
+    : shrink ? "В базу назначения заливается готовая копия, подготовленная по профилю администратора."
     : "Бэкап восстанавливается в базу назначения с сохранением записей. DevRefresh переведёт базу в SIMPLE и освободит неиспользуемое место в файлах.";
-  const hasSource = copy ? Boolean(source.value) : scheduled || refresh.shrink || Boolean(refresh.options.backupName);
-  form.querySelector("#refresh-shrink-notice").textContent = copy ? " · доступна при выборе архива"
-    : ready ? ` · данные на ${shrinkDataDate(ready.dataDate)} · ${formatSize(ready.size)}` : " · копии пока нет";
+  const hasSource = copy ? Boolean(source.value) : shrink ? shrinkAvailable : scheduled || Boolean(options.backupName);
   const submit = form.querySelector("#refresh-submit");
-  submit.disabled = !hasSource;
-  submit.textContent = !form.elements.runNow.checked ? "Запланировать актуализацию" : copy ? "Скопировать базу" : "Восстановить базу";
+  submit.disabled = !hasSource || form.getAttribute("aria-busy") === "true";
+  submit.textContent = scheduled ? "Запланировать актуализацию" : copy ? "Скопировать базу" : "Восстановить базу";
 }
 
 document.addEventListener("submit", async event => {
@@ -412,6 +417,7 @@ document.addEventListener("submit", async event => {
     event.preventDefault();
     await busy(form, async () => {
       const refresh = flow.refresh;
+      const sourceMode = form.elements.sourceMode.value;
       let scheduledAt = null;
       if (!form.elements.runNow.checked) {
         const local = form.elements.scheduledAt.value;
@@ -421,14 +427,15 @@ document.addEventListener("submit", async event => {
         if (entered !== local) throw new Error("Укажите время, которое существует в часовом поясе браузера.");
         scheduledAt = date.toISOString();
       }
-      const job = await api("/api/refresh", { method: "POST", body: JSON.stringify({ database: refresh.row.name, shrink: refresh.shrink, pii: false,
-        sourceDatabase: refresh.sourceDatabase,
+      const job = await api("/api/refresh", { method: "POST", body: JSON.stringify({ database: refresh.row.name, shrink: sourceMode === "shrink", pii: false,
+        sourceDatabase: sourceMode === "database" ? form.elements.sourceDatabase.value : null,
         confirmReplace: form.elements.confirmReplace.checked, confirmDisconnect: form.elements.confirmDisconnect.checked, scheduledAt }) });
       document.querySelector("#database-dialog").close();
       toast(job.scheduledAt ? `Запланировано на ${formatDate(job.scheduledAt)}` : `Задание принято: ${job.id}`);
       if (state.page !== "databases") await navigate("databases");
       rememberDashboardJob(job);
     });
+    if (form.isConnected) syncRefreshSource(form);
   }
 });
 
@@ -513,7 +520,6 @@ document.addEventListener("change", event => {
   if (input.id === "reduction-top") { flow.top = Number(input.value);renderAnalysisRows(); }
   if (input.id === "reduction-hide-system") { flow.hideSystem = input.checked;renderAnalysisRows(); }
   if (input.id === "refresh-source-mode" || input.id === "refresh-source-database") syncRefreshSource(input.form);
-  if (input.id === "refresh-shrink") syncRefreshSource(input.form);
   if (input.id === "refresh-run-now") {
     const scheduled = !input.checked;
     const date = input.form.elements.scheduledAt;

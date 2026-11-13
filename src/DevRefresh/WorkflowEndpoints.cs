@@ -110,6 +110,7 @@ public static class WorkflowEndpoints
             var sources=CopySources(await gateway.List(settings,token),database,parsed.SourceKey);
             var ready=ShrinkBackups.Available(store,settings,parsed.SourceKey);
             return Results.Ok(new {Database=database,SourceKey=parsed.SourceKey,BackupName=backup?.Name,
+                BackupDate=backup?.BackupDate,BackupModifiedAt=backup?.ModifiedAt,
                 BackupUnavailableReason=backup is null ? backupError ?? $"В каталоге нет резервного файла для типа базы «{backupType}»." : null,
                 CopySources=sources.Select(x=>new {x.Name,x.SizeBytes}),
                 ShrinkBackup=ready,ShrinkConfigured=ShrinkBackups.Configured(settings),

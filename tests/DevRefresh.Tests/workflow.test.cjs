@@ -64,3 +64,30 @@ test('alias tab shows the effective file and analysis offers the mapped Dev type
   assert.match(report,/<option value="ut_ke" selected>/);
   assert.match(report,/Сохранить профиль для ut_ke/);
 });
+
+test('refresh defaults to Shrink when available and displays both archive dates',async()=>{
+  const {ctx}=fixture([]);
+  const form={elements:{sourceMode:{value:'shrink',options:[{}]},runNow:{checked:true},sourceDatabase:{value:''}},
+    querySelector:()=>({}),getAttribute:()=>null};
+  const dialog={innerHTML:'',classList:{add(){}},showModal(){},querySelector:()=>form};
+  ctx.document.querySelector=()=>dialog;
+  const options={backupName:'bp_22-11-2026.bak',backupDate:'2026-11-22',activeSessions:0,
+    shrinkBackup:{size:2.5*1024**3,dataDate:'2026-11-21'},copySources:[{name:'bp_dev_source'}]};
+  ctx.api=async()=>options;
+
+  await vm.runInContext('openRefreshDialog({name:"bp_dev_owner"})',ctx);
+  assert.match(dialog.innerHTML,/<option value="shrink" selected>Архив из папки \(shrink\) · 2,5 ГБ/);
+  assert.match(dialog.innerHTML,/21\.11\.2026/);
+  assert.match(dialog.innerHTML,/22\.11\.2026/);
+  assert.match(dialog.innerHTML,/Другая Dev-база/);
+  assert.doesNotMatch(dialog.innerHTML,/name="shrink"/);
+
+  options.shrinkBackup=null;
+  options.backupDate=null;
+  options.backupModifiedAt='2026-11-22T10:00:00Z';
+  form.elements.sourceMode.value='archive';
+  await vm.runInContext('openRefreshDialog({name:"bp_dev_owner"})',ctx);
+  assert.match(dialog.innerHTML,/<option value="archive" selected>Архив из папки \(полный\)/);
+  assert.match(dialog.innerHTML,/Копии пока нет/);
+  assert.match(dialog.innerHTML,/Файл изменён 2026-11-22/);
+});
