@@ -146,6 +146,8 @@ function settingsPage() {
   document.querySelector("#content").innerHTML = `
     ${heading("Администрирование", "Настройки сервиса", "Подключение к серверу, расположение копий, доступ и журналы.")}
     <div class="settings-layout"><div>
+      <section class="card"><div class="card-header"><h2>Обновление DevRefresh</h2></div>
+      <div class="card-body" id="update-panel"><p role="status">Загружаем сведения о версии…</p></div></section>
       <section class="card"><div class="card-header"><div><h2>Подключение к Dev SQL Server</h2><p>Сначала проверьте соединение, затем сохраните параметры.</p></div><span class="badge ${value.configured ? "" : "gray"}">${value.configured ? "Настроено" : "Не настроено"}</span></div>
       <div class="card-body"><form id="connection-form">
         <div class="form-grid">
@@ -194,6 +196,49 @@ function settingsPage() {
       <hr class="divider"><p>Пароли подключений зашифрованы. Пароль администратора хранится в виде проверочного хеша.</p>
     </aside></div>`;
   updateAuthenticationFields();
+  loadUpdatePanel();
+}
+
+let checkedRelease;
+
+async function loadUpdatePanel({check = false, watch = false, deadline = Date.now() + 15 * 60 * 1000} = {}) {
+  const panel = document.querySelector("#update-panel");
+  if (!panel) return;
+  try {
+    const status = await api("/api/admin/update", {signal: AbortSignal.timeout(5000)});
+    if (check) checkedRelease = await api("/api/admin/update/latest", {signal: AbortSignal.timeout(25000)});
+    if (state.page !== "settings" || panel !== document.querySelector("#update-panel")) return;
+    const {operation, unavailable, currentVersion} = status;
+    const busy = operation?.state === "Running";
+    const release = checkedRelease?.release;
+    const available = checkedRelease?.available && release?.version !== currentVersion;
+    const message = busy ? `Устанавливается версия ${operation.version}. Служба перезапустится.`
+      : operation?.state === "Failed" ? `Обновление до ${operation.version} не завершилось. Проверьте журнал обновления на сервере.`
+      : operation?.state === "Succeeded" ? `Версия ${operation.version} установлена.` : "";
+    panel.innerHTML = `<dl><div class="detail-row"><dt>Установленная версия</dt><dd>${esc(currentVersion)}</dd></div>
+      ${release ? `<div class="detail-row"><dt>Последний релиз</dt><dd>${esc(release.version)}${!available ? " · Новых обновлений нет" : ""}</dd></div>` : ""}</dl>
+      ${release ? `<details><summary>Список изменений</summary><p class="update-release-notes">${esc(release.notes || "Описание релиза отсутствует.")}</p>
+      <p><a href="${esc(release.url)}" target="_blank" rel="noopener noreferrer">Релиз на GitHub</a></p></details>` : ""}
+      ${unavailable ? `<p class="muted">${esc(unavailable)}</p>` : ""}
+      <div class="form-actions"><button type="button" class="button" data-action="check-update" ${busy ? "disabled" : ""}>Проверить версию</button>
+      ${available && !unavailable ? `<button type="button" class="button primary" data-action="install-update" ${busy ? "disabled" : ""}>Обновить до ${esc(release.version)}</button>` : ""}</div>
+      <p class="form-result" role="status">${esc(message)}</p>`;
+    if (busy && Date.now() < deadline) setTimeout(() => { if (panel.isConnected) loadUpdatePanel({watch:true, deadline}); }, 3000);
+    else if (watch && operation?.state === "Succeeded") location.reload();
+  } catch (error) {
+    if (!panel.isConnected) return;
+    if (watch && Date.now() < deadline) {
+      setTimeout(() => { if (panel.isConnected) loadUpdatePanel({watch:true, deadline}); }, 3000);
+      return;
+    }
+    const result = panel.querySelector('[role="status"]');
+    if (result) result.textContent = error.message;
+    if (!panel.querySelector('button')) {
+      const button = document.createElement('button');
+      button.className = 'button'; button.dataset.action = 'check-update'; button.textContent = 'Проверить версию';
+      panel.appendChild(button);
+    }
+  }
 }
 
 function updateAuthenticationFields() {
@@ -293,6 +338,21 @@ document.addEventListener("click", async event => {
     if (button.dataset.inspect !== undefined) inspectDatabase(Number(button.dataset.inspect));
     if (button.dataset.action === "close-dialog") document.querySelector("#database-dialog").close();
     if (button.dataset.action === "refresh") await loadDatabases();
+    if (button.dataset.action === "check-update") {
+      button.disabled = true;
+      try { await loadUpdatePanel({check:true}); } finally { button.disabled = false; }
+    }
+    if (button.dataset.action === "install-update") {
+      const version = checkedRelease?.release.version;
+      if (!version || !confirm(`Установить DevRefresh ${version}? Служба перезапустится, сайт будет временно недоступен.`)) return;
+      button.disabled = true;
+      try {
+        await api("/api/admin/update", {method:"POST",body:JSON.stringify({version})});
+        const panel = document.querySelector("#update-panel");
+        if (panel) panel.innerHTML = '<p role="status">Обновление запущено. Ожидаем перезапуска службы…</p>';
+        await loadUpdatePanel({watch:true});
+      } finally { button.disabled = false; }
+    }
     if (button.dataset.action === "logout") {
       stopDashboardJobs(true);
       await api("/api/logout", { method: "POST", body: "{}" });

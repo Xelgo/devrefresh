@@ -204,6 +204,12 @@ public sealed partial class Store
         return estimates;
     }
     public WorkflowJob[] GetQueued()=>GetJobsInternal("WHERE status='Queued' ORDER BY COALESCE(scheduled_at,created_at),created_at",null);
+    internal bool HasExecutingJobs()
+    {
+        using var db=Open();using var cmd=db.CreateCommand();
+        cmd.CommandText="SELECT EXISTS (SELECT 1 FROM workflow_jobs WHERE status='Running' AND background_status IS NOT 'Queued')";
+        return Convert.ToInt32(cmd.ExecuteScalar())!=0;
+    }
     internal WorkflowJob? GetNextBackgroundMaintenance()=>GetJobsInternal(
         "WHERE status='Running' AND background_status='Queued' ORDER BY ready_at,id LIMIT 1",null).SingleOrDefault();
     public string[] QueueDueJobs(DateTimeOffset now)

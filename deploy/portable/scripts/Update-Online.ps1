@@ -1,6 +1,9 @@
 param(
     [string]$TargetDirectory,
     [ValidatePattern('^[A-Za-z][A-Za-z0-9_-]{0,63}$')][string]$ServiceName='DevRefresh',
+    [ValidatePattern('^v\d+\.\d+\.\d+$')][string]$ExpectedTag,
+    [string]$StatusPath,
+    [string]$LogPath,
     [switch]$CheckOnly,
     [switch]$Yes
 )
@@ -26,9 +29,23 @@ function Wait-UpdatedHealth([string]$Url,[version]$Version) {
     throw 'The service started, but /health did not confirm the new version. Check the service logs and last-update.json.'
 }
 
+function Write-UpdateStatus([string]$State) {
+    if (-not $StatusPath) { return }
+    $temporary = "$StatusPath.$PID.tmp"
+    $value = @{ Version=$ExpectedTag.Substring(1); State=$State; ProcessId=$PID } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText($temporary,$value,[Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $StatusPath -Force
+}
+
 $stage = $null
 $updateLock = $null
+$transcribing = $false
 try {
+    if ($LogPath) {
+        Start-Transcript -LiteralPath $LogPath | Out-Null
+        $transcribing = $true
+    }
+    if ($StatusPath) { Write-UpdateStatus 'Running' }
     $repository = 'Xelgo/devrefresh'
     $assetName = 'DevRefresh-update-win-x64.zip'
     if (-not $TargetDirectory) { $TargetDirectory = $taskPackageRoot }
@@ -47,13 +64,14 @@ try {
     if ($release.draft -or $release.prerelease -or $release.tag_name -cnotmatch '^v\d+\.\d+\.\d+$') {
         throw 'The latest GitHub release does not have a stable DevRefresh version tag.'
     }
+    if ($ExpectedTag -and $ExpectedTag -cne $release.tag_name) { throw 'The release changed. Check for updates again.' }
     $available = ConvertTo-DevRefreshVersion $release.tag_name.Substring(1)
     $asset = @($release.assets | Where-Object { $_.name -ceq $assetName -and $_.state -eq 'uploaded' })
     if ($asset.Count -ne 1 -or $asset[0].digest -cnotmatch '^sha256:[0-9a-fA-F]{64}$') {
         throw 'The GitHub release is missing the update ZIP or its SHA-256 digest.'
     }
     Write-Output "Installed version: $current. GitHub release: $($release.tag_name)."
-    if ($available -le $current) { Write-Output 'No newer version is available.'; exit 0 }
+    if ($available -le $current) { Write-UpdateStatus 'Succeeded'; Write-Output 'No newer version is available.'; exit 0 }
     if ($CheckOnly) { Write-Output 'An online update is available.'; exit 0 }
     Assert-ServiceAdministrator
 
@@ -88,6 +106,7 @@ try {
     $updateLock = [IO.File]::Open((Join-Path $TargetDirectory '.online-update.lock'),[IO.FileMode]::OpenOrCreate,
         [IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
     if ((ConvertTo-DevRefreshVersion (Get-Item -LiteralPath $exe).VersionInfo.FileVersion) -ge $available) {
+        Write-UpdateStatus 'Succeeded'
         Write-Output 'No newer version is available.'
         exit 0
     }
@@ -97,18 +116,27 @@ try {
     Stop-DevRefreshService $ServiceName
     $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
     & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'scripts\Update.ps1') -TargetDirectory $TargetDirectory
-    if ($LASTEXITCODE -ne 0) { throw 'Installation failed. Inspect the update log before starting the service.' }
+    if ($LASTEXITCODE -ne 0) {
+        if ($restart -and $StatusPath -and (Test-Path -LiteralPath $exe) -and
+            (ConvertTo-DevRefreshVersion (Get-Item -LiteralPath $exe).VersionInfo.FileVersion) -eq $current) {
+            Start-DevRefreshService $ServiceName $TargetDirectory
+        }
+        throw 'Installation failed. Inspect the update log.'
+    }
 
     if ($restart) {
         Start-DevRefreshService $ServiceName $TargetDirectory
         Wait-UpdatedHealth $healthUrl $available
     }
+    Write-UpdateStatus 'Succeeded'
     Write-Output "DevRefresh $($release.tag_name) installed."
     exit 0
 } catch {
-    [Console]::Error.WriteLine($_.Exception.Message)
+    Write-Host $_.Exception.Message
+    try { Write-UpdateStatus 'Failed' } catch { [Console]::Error.WriteLine($_.Exception.Message) }
     exit 1
 } finally {
+    if ($transcribing) { Stop-Transcript | Out-Null }
     if ($updateLock) { $updateLock.Dispose() }
     if ($stage -and $stage.StartsWith($TargetDirectory + '\.online-update-', [StringComparison]::OrdinalIgnoreCase) -and
         (Test-Path -LiteralPath $stage -PathType Container)) {

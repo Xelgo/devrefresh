@@ -102,6 +102,7 @@ builder.Services.AddSingleton<StructureAnalyzer>();
 builder.Services.AddSingleton<ReductionExecutor>();
 builder.Services.AddSingleton<WorkflowService>();
 builder.Services.AddHostedService(sp=>sp.GetRequiredService<WorkflowService>());
+builder.Services.AddSingleton<WebUpdates>();
 builder.Services.AddSingleton<IPasswordHasher<LocalAdmin>, PasswordHasher<LocalAdmin>>();
 builder.Services.Configure<PasswordHasherOptions>(options => options.IterationCount = 210_000);
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.RespectNullableAnnotations = true);
@@ -287,6 +288,21 @@ app.MapGet("/api/admin/settings", (Store store) => Results.Ok(new
     logRetentionDays = store.GetLogRetentionDays(),
     localUsername = store.GetAdmin()!.Username
 }));
+app.MapGet("/api/admin/update", (WebUpdates updates) => Results.Ok(updates.Status()));
+app.MapGet("/api/admin/update/latest", async (WebUpdates updates,CancellationToken token) =>
+{
+    var release=await updates.Latest(token);
+    return Results.Ok(new {Release=release,Available=WebUpdates.IsNewer(release)});
+});
+app.MapPost("/api/admin/update", async (UpdateInput input,WebUpdates updates,HttpContext context,SessionService sessions) =>
+{
+    if (updates.InstallUnavailable() is { } reason) throw new InputException(reason);
+    var release=await updates.Latest(context.RequestAborted);
+    if (input.Version!=release.Version || !WebUpdates.IsNewer(release))
+        throw new InputException("Версия релиза изменилась. Проверьте обновления ещё раз.");
+    updates.Start(release,sessions.Current(context)!.Name);
+    return Results.Accepted();
+});
 app.MapPut("/api/admin/log-retention", (LogRetentionInput input, HttpContext context, Store store, SessionService sessions) =>
 {
     store.SaveLogRetentionDays(input.Days, sessions.Current(context)!.Name);

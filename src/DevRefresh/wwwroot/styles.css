@@ -21,6 +21,7 @@ p{line-height:1.65}
 small,.muted{color:var(--muted)}
 small{font-size:12px}
 .loading{padding:60px;color:var(--muted)}
+.update-release-notes{white-space:pre-wrap;overflow-wrap:anywhere}
 [hidden]{display:none!important}
 
 .shell{min-height:100vh;display:grid;grid-template-columns:256px minmax(0,1fr)}

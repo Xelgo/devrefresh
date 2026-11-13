@@ -151,6 +151,28 @@ public sealed class ApplicationTests
     }
 
     [Fact]
+    public async Task WebInstallationRequiresAdminAndCsrfAndIsDisabledInConsoleMode()
+    {
+        using var app = new Factory();
+        using var admin = app.Client();
+        using var developer = app.Client();
+        using var anonymous = app.Client();
+        await Setup(admin);
+        developer.DefaultRequestHeaders.Add("Test-Domain", "CORP\\demo_owner");
+        const string route = "/api/admin/update";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(route)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await developer.GetAsync(route + "/latest")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(developer,HttpMethod.Post,route,new {version="99.0.0"})).StatusCode);
+        var status=(await admin.GetFromJsonAsync<JsonObject>(route))!;
+        Assert.False(string.IsNullOrEmpty(status["currentVersion"]?.GetValue<string>()));
+        Assert.Contains("службы Windows",status["unavailable"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.BadRequest,(await Send(admin,HttpMethod.Post,route,new {version="99.0.0"},csrf:false)).StatusCode);
+        var blocked=await Send(admin,HttpMethod.Post,route,new {version="99.0.0"});
+        Assert.Equal(HttpStatusCode.BadRequest,blocked.StatusCode);
+        Assert.Contains("службы Windows",(await blocked.Content.ReadFromJsonAsync<JsonObject>())!["error"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task SqlPasswordIsEncryptedRetainedAndNeverReturned()
     {
         using var app = new Factory();

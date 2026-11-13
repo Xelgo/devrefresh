@@ -13,12 +13,29 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
     private readonly string dataPath=Path.GetFullPath(configuration["DataDirectory"]??"App_Data",environment.ContentRootPath);
     private readonly Dictionary<string,AnalysisData> analysisCache=new(StringComparer.Ordinal);
     private readonly object shrinkFiles=new();
+    private readonly object dispatchGate=new();
+    private bool pausedForUpdate;
+    private const string PrepareBackgroundMaintenance="Подготовка фонового освобождения места";
     private sealed record RunResult(object Value,WorkflowRequest? MaintenanceRequest=null);
     public void Enqueue(WorkflowJob job)
     {
         if (job.Status=="Queued") SignalQueue();
     }
     private void SignalQueue() => queueSignal.Writer.TryWrite(true);
+    internal bool PauseForUpdate()
+    {
+        lock (dispatchGate)
+        {
+            if (pausedForUpdate || store.HasExecutingJobs()) return false;
+            pausedForUpdate=true;
+            return true;
+        }
+    }
+    internal void ResumeAfterUpdate()
+    {
+        lock (dispatchGate) pausedForUpdate=false;
+        SignalQueue();
+    }
     public AnalysisData ReadAnalysis(string id)
     {
         if(!Guid.TryParseExact(id,"N",out _))throw new InputException("Некорректный идентификатор анализа.");
@@ -66,22 +83,26 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
                     await maintenance;
                     maintenance=null;
                 }
-                if (running.Count == maxParallelJobs) continue;
-                foreach (var job in store.GetQueued())
+                lock (dispatchGate)
                 {
-                    token.ThrowIfCancellationRequested();
-                    var lane = job.Kind=="shrink-build" ? "shrink-build:"+job.SourceKey : job.SourceKey;
-                    if (running.ContainsKey(lane) || !store.TryStartJob(job.Id,DateTimeOffset.UtcNow)) continue;
-                    var timing = new WorkflowRunTiming(job.Request.SourceDatabase is not null);
-                    var task = Task.Run(()=>ExecuteJob(job,timing,token));
-                    running.Add(lane,task);
-                    _ = task.ContinueWith(_=>SignalQueue(),CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
-                    if (running.Count == maxParallelJobs) break;
-                }
-                if (running.Count==0 && maintenance is null && store.GetNextBackgroundMaintenance() is { } background)
-                {
-                    maintenance=Task.Run(()=>RunBackgroundMaintenance(background,token));
-                    _ = maintenance.ContinueWith(_=>SignalQueue(),CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
+                    if (pausedForUpdate || running.Count == maxParallelJobs) continue;
+                    foreach (var job in store.GetQueued())
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var lane = job.Kind=="shrink-build" ? "shrink-build:"+job.SourceKey : job.SourceKey;
+                        if (running.ContainsKey(lane) || !store.TryStartJob(job.Id,DateTimeOffset.UtcNow)) continue;
+                        var timing = new WorkflowRunTiming(job.Request.SourceDatabase is not null);
+                        var task = Task.Run(()=>ExecuteJob(job,timing,token));
+                        running.Add(lane,task);
+                        _ = task.ContinueWith(_=>SignalQueue(),CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
+                        if (running.Count == maxParallelJobs) break;
+                    }
+                    if (running.Count==0 && maintenance is null && store.GetNextBackgroundMaintenance() is { } background)
+                    {
+                        store.StartBackgroundMaintenance(background.Id,PrepareBackgroundMaintenance);
+                        maintenance=Task.Run(()=>RunBackgroundMaintenance(background,token));
+                        _ = maintenance.ContinueWith(_=>SignalQueue(),CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
+                    }
                 }
             }
         }
@@ -407,13 +428,11 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
 
     private async Task RunBackgroundMaintenance(WorkflowJob job,CancellationToken token)
     {
-        const string prepare="Подготовка фонового освобождения места";
         var id=job.Id;
         var database=job.Target!;
         var settings=job.Request.Settings;
         var previous=store.GetExecutionReport(id)!;
-        var timing=new WorkflowRunTiming(previous,prepare);
-        store.StartBackgroundMaintenance(id,prepare);
+        var timing=new WorkflowRunTiming(previous,PrepareBackgroundMaintenance);
         void Progress(string text)
         {
             timing.ChangeStage(text);

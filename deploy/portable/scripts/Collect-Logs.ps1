@@ -18,7 +18,7 @@ try {
                 Set-Content -LiteralPath (Join-Path $taskStage 'logs\launcher-tail.txt') -Encoding UTF8
         }
         Get-ChildItem -LiteralPath $taskLogs -File | Where-Object {
-            $_.Name -match '^(update|rollback)-[0-9-]+\.log$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
+            $_.Name -match '^(?:(?:update|rollback)-[0-9-]+|web-update-\d{8}-\d{6}-[a-f0-9]{32})\.log$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
         } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 3 | ForEach-Object {
             # PowerShell 5.1 Tee-Object writes UTF-16; decode before adding a UTF-8 support copy.
             Get-Content -LiteralPath $_.FullName -Tail 1000 | Set-Content -LiteralPath (Join-Path $taskStage ('logs\' + $_.Name)) -Encoding UTF8
