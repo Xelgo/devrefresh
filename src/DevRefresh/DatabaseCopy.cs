@@ -31,6 +31,8 @@ internal sealed class DatabaseCopy(RestoreSql sql)
         progress("Создание базы для копирования в режиме SIMPLE");
         await Execute(control,$"CREATE DATABASE {Q(stage)} COLLATE {collation}",token);
         await Execute(control,$"ALTER DATABASE {Q(stage)} SET RECOVERY SIMPLE",token);
+        await using (var stagingConnection = await sql.Open(settings,stage,token))
+            await RemoveInheritedDuplicateUsers(stagingConnection,source,token);
 
         progress("Онлайн-копирование структуры и данных базы");
         using var sourceConnection = new SqlConnection(sql.ConnectionString(settings));
@@ -67,6 +69,13 @@ internal sealed class DatabaseCopy(RestoreSql sql)
             },token);
         }
         catch (Exception) when (token.IsCancellationRequested) { token.ThrowIfCancellationRequested(); throw; }
+        catch (TransferException error)
+        {
+            for (var cause=error.InnerException; cause is not null; cause=cause.InnerException)
+                if (cause is SqlException sqlError)
+                    throw new SqlServiceException(sqlError.Message,sqlError.Number,error);
+            throw;
+        }
         finally
         {
             sourceSmo.Disconnect();
@@ -81,6 +90,21 @@ internal sealed class DatabaseCopy(RestoreSql sql)
             ALTER DATABASE {Q(stage)} SET READ_COMMITTED_SNAPSHOT {rcsi};
             ALTER DATABASE {Q(stage)} SET ALLOW_SNAPSHOT_ISOLATION {snapshot};
             """,token);
+    }
+
+    private static async Task RemoveInheritedDuplicateUsers(SqlConnection stage,string source,CancellationToken token)
+    {
+        // CREATE DATABASE inherits users from model. Let SMO recreate matching users from the source.
+        var duplicates=await Query(stage,$"""
+            SELECT inherited.name AS UserName
+            FROM sys.database_principals AS inherited
+            JOIN {Q(source)}.sys.database_principals AS original
+              ON original.name COLLATE DATABASE_DEFAULT = inherited.name
+            WHERE inherited.principal_id > 4 AND original.principal_id > 4
+              AND inherited.type IN ('S','U','G') AND original.type IN ('S','U','G')
+            """,token);
+        foreach (var duplicate in duplicates)
+            await Execute(stage,$"DROP USER {Q((string)duplicate["UserName"]!)}",token);
     }
 
     public static async Task<bool> TryRefreshLock(SqlConnection connection,string database,string mode,CancellationToken token)
