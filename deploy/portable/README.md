@@ -1,4 +1,4 @@
-# DevRefresh 0.2.39 — служба Windows x64
+# DevRefresh 0.2.40 — служба Windows x64
 
 ## Быстрый запуск на другом сервере
 

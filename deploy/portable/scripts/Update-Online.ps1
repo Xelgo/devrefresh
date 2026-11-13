@@ -95,7 +95,8 @@ try {
     if ($service.Status -notin @('Running','Stopped')) { throw 'Wait until the service is running or stopped, then retry.' }
     $restart = $service.Status -eq 'Running'
     Stop-DevRefreshService $ServiceName
-    & (Join-Path $PSHOME 'powershell.exe') -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'scripts\Update.ps1') -TargetDirectory $TargetDirectory
+    $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'scripts\Update.ps1') -TargetDirectory $TargetDirectory
     if ($LASTEXITCODE -ne 0) { throw 'Installation failed. Inspect the update log before starting the service.' }
 
     if ($restart) {
