@@ -171,7 +171,8 @@ public sealed class ShrinkTableRewriteTests
 
             Assert.Equal(new BinaryDataCleanupReport(2721,20,2700,270_000,2_160_000),baseline.BinaryDataCleanup);
             Assert.Equal(baseline.BinaryDataCleanup,optimized.BinaryDataCleanup);
-            Assert.Contains(stages,stage=>stage.StartsWith("Возврат сохранённых строк · BinaryData",StringComparison.Ordinal));
+            Assert.True(stages.Any(stage=>stage.StartsWith("Возврат сохранённых строк · BinaryData",StringComparison.Ordinal)),
+                string.Join(Environment.NewLine,stages));
             Assert.Equal(objectId,await RestoreSql.Scalar<int>(connection,"SELECT OBJECT_ID(N'dbo.BinaryData')"));
             Assert.Equal(snapshot[0]["IndexCount"],await RestoreSql.Scalar<int>(connection,
                 "SELECT COUNT(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.BinaryData')"));
@@ -200,6 +201,7 @@ public sealed class ShrinkTableRewriteTests
             var stages = new List<string>();
             var result = await ApplyBinaryData(settings,sql,analysis,rewrite:true,progress:stages.Add);
             Assert.Equal(270_000,result.BinaryDataCleanup?.DeletedBlocks);
+            Assert.Contains("Оценка объёма очистки BinaryData",stages);
             Assert.Contains("Удаление блоков BinaryData",stages);
             Assert.DoesNotContain(stages,stage=>stage.StartsWith("Возврат сохранённых строк",StringComparison.Ordinal));
         });

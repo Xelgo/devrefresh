@@ -495,12 +495,14 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
             if (binaryCleanup is not null)
             {
                 var binaryTable = rewriteTables
-                    ? all.FirstOrDefault(table => table.Schema=="dbo" && table.Table=="BinaryData"
+                    ? all.FirstOrDefault(table =>
+                        table.Schema.Equals("dbo",StringComparison.OrdinalIgnoreCase)
+                        && table.Table.Equals("BinaryData",StringComparison.OrdinalIgnoreCase)
                         && ShrinkTableRewriter.IsLargeEnough(table))
                     : null;
                 Func<long,long,Task<BinaryDataCleanupReport?>>? rewriteBinaryData = binaryTable is null ? null
                     : (candidates,remaining) => InShrinkTransaction(binaryTable,local =>
-                        binaryCleanup.TryRewrite(binaryTable,local,diagnostics,logger,reportProgress,
+                        binaryCleanup.TryRewrite(binaryTable with {LogicalName="BinaryData"},local,diagnostics,logger,reportProgress,
                             rewriteMinDeletePercent,candidates,remaining,token));
                 binaryReport = await binaryCleanup.RemoveUnreferenced(progress,reportProgress,diagnostics,logger,
                     analysis.Id,token,rewriteBinaryData);
