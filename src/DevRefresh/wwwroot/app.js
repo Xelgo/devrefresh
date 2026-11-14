@@ -170,7 +170,7 @@ function settingsPage() {
         <p class="muted">Если оба поля пусты, используется каталог Shrink-копий.</p>
         <div class="form-grid">
           <div class="field full"><label for="copy-backup-directory">Путь для приложения</label><input id="copy-backup-directory" name="copyBackupDirectory" value="${esc(value.copyBackupDirectory)}" maxlength="2048"><small>DevRefresh читает и удаляет временные файлы в этой папке.</small></div>
-          <div class="field full"><label for="sql-copy-backup-directory">Путь для SQL Server</label><input id="sql-copy-backup-directory" name="sqlCopyBackupDirectory" value="${esc(value.sqlCopyBackupDirectory)}" maxlength="2048"><small>Путь к той же папке. SQL Server читает и записывает в неё временные файлы.</small></div>
+          <div class="field full"><label for="sql-copy-backup-directory">Путь для SQL Server</label><input id="sql-copy-backup-directory" name="sqlCopyBackupDirectory" value="${esc(value.sqlCopyBackupDirectory)}" maxlength="2048"><small>Укажите путь к той же папке. Если она находится на сервере SQL, укажите здесь локальный путь к её диску, даже если DevRefresh обращается к папке по сети.</small></div>
         </div>
         <hr class="divider"><label class="checkbox"><input name="trustServerCertificate" type="checkbox" ${value.trustServerCertificate ? "checked" : ""}><span>Доверять сертификату SQL Server без проверки цепочки<small class="muted"> · для серверов с сертификатом, которому инфраструктура пока не доверяет</small></span></label>
         <hr class="divider"><h3>После актуализации</h3>

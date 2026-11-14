@@ -587,8 +587,7 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
                 store.RegisterCopyBackup(job.Id,filename,current,backupStage);
                 job=job with {Request=job.Request with {Settings=current},ResourceName=filename};
                 progress(backupStage);
-                await RestoreSql.Execute(connection,
-                    $"BACKUP DATABASE {RestoreSql.Q(source)} TO DISK={RestoreSql.L(sqlPath)} WITH COPY_ONLY,COMPRESSION,CHECKSUM,INIT",token);
+                await DatabaseCopy.CreateBackup(connection,job,source,sqlPath,progress,logger,token);
             }
 
             // Check that DevRefresh can access the temporary file before changing the destination.

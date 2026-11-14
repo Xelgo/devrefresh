@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using static DevRefresh.RestoreSql;
 
@@ -25,6 +26,50 @@ internal static class DatabaseCopy
         File.Delete(Path.Combine(paths.AppDirectory,job.ResourceName));
     }
 
+    public static async Task CreateBackup(SqlConnection connection, WorkflowJob job, string source, string sqlPath,
+        Action<string> progress, ILogger logger, CancellationToken token)
+    {
+        var command = $"BACKUP DATABASE {Q(source)} TO DISK={L(sqlPath)} WITH COPY_ONLY,COMPRESSION,CHECKSUM,INIT";
+        try
+        {
+            await Execute(connection, command, token);
+        }
+        catch (SqlException error) when (IsNetworkWriteFailure(error, sqlPath))
+        {
+            logger.LogWarning(error, "Temporary backup write failed on a network share for job {JobId}", job.Id);
+            progress("Повтор создания временного .bak после сетевого сбоя");
+            await Task.Delay(TimeSpan.FromSeconds(5), token);
+            try
+            {
+                DeleteBackup(job);
+            }
+            catch (Exception cleanupError) when (cleanupError is IOException or UnauthorizedAccessException)
+            {
+                logger.LogWarning(cleanupError, "Could not remove incomplete temporary backup before retry for job {JobId}", job.Id);
+                throw NetworkFailure(error, "Не удалось удалить неполный файл для повтора.");
+            }
+
+            try
+            {
+                await Execute(connection, command, token);
+            }
+            catch (SqlException retryError) when (IsNetworkWriteFailure(retryError, sqlPath))
+            {
+                throw NetworkFailure(retryError, "Сбой повторился при записи.");
+            }
+        }
+    }
+
+    private static bool IsNetworkWriteFailure(SqlException error, string sqlPath) =>
+        sqlPath.StartsWith(@"\\", StringComparison.Ordinal) &&
+        error.Errors.Cast<SqlError>().Any(item =>
+            item.Number is 3202 or 3271 or 3634 &&
+            Regex.IsMatch(item.Message, @"[':\s](?:59|64)\s*\(", RegexOptions.CultureInvariant));
+
+    private static SqlServiceException NetworkFailure(SqlException error, string detail) =>
+        new($"SQL Server потерял доступ к сетевой папке при создании временного .bak. {detail} " +
+            "Укажите локальный путь на сервере SQL в настройке временных .bak или проверьте доступность сетевой папки. " +
+            error.Message, error.Number, error);
 
     public static async Task<bool> TryRefreshLock(SqlConnection connection,string database,string mode,CancellationToken token)
     {
