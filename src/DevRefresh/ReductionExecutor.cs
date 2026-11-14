@@ -18,6 +18,21 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
     private static string Id(AnalyzedTable t)=>t.Fields.FirstOrDefault(f=>f.Name=="Ссылка" && f.Column=="_IDRRef")?.Column??"_IDRRef";
     private static bool Master(AnalyzedTable t)=>t.Role=="Main" && t.Kind is "Документ" or "Справочник" && t.Columns.Any(c=>c.Name=="_IDRRef");
     private static bool IsRegister(AnalyzedTable table) => table.Kind.StartsWith("Регистр", StringComparison.Ordinal);
+    private static string PeriodLiteral(DateTime cutoff) =>
+        RestoreSql.L(cutoff.ToString("yyyy-MM-ddTHH:mm:ss.fffffff",System.Globalization.CultureInfo.InvariantCulture));
+
+    private static string KeepAuxiliaryRows(FilteredDelete deletion)
+    {
+        if (deletion.FullTable) return "1=0";
+        if (deletion.Cutoff is { } cutoff)
+        {
+            var keep = $"s.[_Period]>{PeriodLiteral(cutoff)}";
+            return deletion.Table.Columns.Single(c=>c.Name=="_Period").Nullable
+                ? $"{keep} OR s.[_Period] IS NULL" : keep;
+        }
+        // WHERE only deletes TRUE. Rows evaluating to UNKNOWN must also survive.
+        return $"CASE WHEN ({deletion.Predicate}) THEN 0 ELSE 1 END=1";
+    }
 
     private static async Task<long> DeleteAuxiliary(
         SqlConnection connection,SqlTransaction transaction,FilteredDelete deletion,Action<string> progress,
@@ -120,6 +135,10 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
         var tx=(SqlTransaction)await cn.BeginTransactionAsync(IsolationLevel.Serializable,token);
         var diagnostics = jobId is not null && configuration.GetValue("SqlDiagnostics:Enabled",true)
             ? new SqlReductionDiagnostics(sql,settings,cn,logger,jobId) : null;
+        // cleanBinaryData is exclusive to owned Shrink builds. Start above verifies the ownership marker.
+        var rewriter = cleanBinaryData && configuration.GetValue("Shrink:RewriteTables",true)
+            ? new ShrinkTableRewriter(cn,tx,diagnostics,logger,liveProgress??progress,
+                Math.Clamp(configuration.GetValue("Shrink:RewriteMinDeletePercent",70),51,100)) : null;
         (string Action, AnalyzedTable Table)? currentOperation = null;
         var rollbackStarted = false;
         var reductionFailed = false;
@@ -256,7 +275,7 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
                     }
                     else if (safeAfter is { } cutoff && aux.Columns.Any(c=>c.Name=="_Period"))
                     {
-                        auxiliaryDeletes.Add(new(aux,$"s.[_Period]<={RestoreSql.L(cutoff.ToString("yyyy-MM-ddTHH:mm:ss.fffffff"))}",ByPeriod:true,Cutoff:cutoff));
+                        auxiliaryDeletes.Add(new(aux,$"s.[_Period]<={PeriodLiteral(cutoff)}",ByPeriod:true,Cutoff:cutoff));
                     }
                     else throw new InputException($"Невозможно безопасно обработать связанную таблицу {aux.Table} для {root.LogicalName}.");
                 }
@@ -271,10 +290,17 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
                 currentOperation = (previewOnly ? "подсчёт связанных строк для отчёта" : "удаление связанных строк", table);
                 using var measured = measureTable?.Invoke(previewOnly ? "Подсчёт связанных строк" : "Удаление связанных строк",table);
                 if (deletion.FullTable) await CaptureBinaryKeys(table,"",deletion.Predicate);
-                var rows = previewOnly
-                    ? await Observe("preview-auxiliary-rows",table,
-                        ()=>RestoreSql.Scalar<long>(cn,$"SELECT COUNT_BIG(*) FROM {Table(table)} s WHERE {deletion.Predicate}",token,tx),token)
-                    : await DeleteAuxiliary(cn,tx,deletion,liveProgress??progress,diagnostics,token);
+                long rows;
+                if (previewOnly)
+                {
+                    rows = await Observe("preview-auxiliary-rows",table,
+                        ()=>RestoreSql.Scalar<long>(cn,$"SELECT COUNT_BIG(*) FROM {Table(table)} s WHERE {deletion.Predicate}",token,tx),token);
+                }
+                else
+                {
+                    var rewritten = rewriter is null ? null : await rewriter.TryRewrite(table,KeepAuxiliaryRows(deletion),token);
+                    rows = rewritten ?? await DeleteAuxiliary(cn,tx,deletion,liveProgress??progress,diagnostics,token);
+                }
                 counts.Add(new(table.LogicalName,table.Table,rows,"Связанные данные"));
             }
             if(previewOnly)
@@ -296,9 +322,13 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
             {
                 currentOperation = ("удаление строк", set.Table);
                 using var measured = measureTable?.Invoke("Удаление выбранных строк",set.Table);
-                var join = $"JOIN {set.Name} d ON {KeyJoin(set.Table,"s","d")}";
-                if (fullyCleared.Contains(set.Table.Key)) await CaptureBinaryKeys(set.Table,join,"1=1");
-                var rows=await Observe("delete-selected-rows",set.Table,
+                var keyMatch = KeyJoin(set.Table,"s","d");
+                var join = $"JOIN {set.Name} d ON {keyMatch}";
+                var fullTable = fullyCleared.Contains(set.Table.Key);
+                if (fullTable) await CaptureBinaryKeys(set.Table,join,"1=1");
+                var keep = $"NOT EXISTS (SELECT 1 FROM {set.Name} d WHERE {keyMatch})";
+                var rewritten = rewriter is null ? null : await rewriter.TryRewrite(set.Table,keep,token,deleteKeyTable:set.Name);
+                var rows=rewritten ?? await Observe("delete-selected-rows",set.Table,
                     ()=>RestoreSql.Scalar<long>(cn,$"DELETE s FROM {Table(set.Table)} s {join}; SELECT CONVERT(bigint,@@ROWCOUNT)",token,tx),token);
                 counts.Add(new(set.Table.LogicalName,set.Table.Table,rows,rules.Any(r=>r.Key==set.Table.Key)?"Выбрано / обязательно":"Связанные данные"));
             }

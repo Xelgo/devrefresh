@@ -6,6 +6,8 @@ Download the Windows x64 installation and update packages from [GitHub Releases]
 
 For the first upgrade to 0.2.39, use the existing offline update process. For subsequent releases, run `UPDATE-ONLINE.cmd` as a Windows administrator from the installation directory and confirm the update. The ZIP is verified before the service stops. To check the available version, run `UPDATE-ONLINE.cmd -CheckOnly`.
 
+Shrink builds can rewrite eligible tables in the temporary database when they have at least 250,000 rows and the reduction will remove at least 70%. The service copies the rows to keep, truncates the original table, restores the saved rows, and drops the working table in the same transaction. This uses temporary space in the staging database. Set `"Shrink": { "RewriteTables": false }` in `config/server.json` and restart the service to use the original delete strategy for all tables. The optional `RewriteMinDeletePercent` setting accepts a threshold from 51 to 100.
+
 Build in Windows PowerShell with the .NET 10 SDK.
 
     .\scripts\Build-Portable.ps1 -Kind Both
@@ -16,3 +18,5 @@ Run the .NET and JavaScript tests with:
 
     dotnet test tests\DevRefresh.Tests\DevRefresh.Tests.csproj
     node --test
+
+On a Windows machine with SQL Server Express LocalDB, set `DEVREFRESH_TEST_LOCALDB=1` before running the .NET tests to verify the Shrink rewrite against SQL Server.
