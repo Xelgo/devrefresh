@@ -148,6 +148,132 @@ public sealed class ShrinkTableRewriteTests
         });
     }
 
+    [LocalDbFact]
+    public async Task BinaryRewriteMatchesBatchedDeleteForImagePayloads()
+    {
+        await InStage(async (settings, sql, connection, analysis) =>
+        {
+            analysis = await SeedBinaryData(connection,analysis,"image");
+            var baseline = await ApplyBinaryData(settings,sql,analysis,rewrite:false);
+            var snapshot = await RestoreSql.Query(connection, """
+                SELECT OBJECT_ID(N'dbo.BinaryData') AS ObjectId,
+                       (SELECT COUNT(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.BinaryData')) AS IndexCount
+                """);
+            await RestoreSql.Execute(connection, """
+                SELECT f_key, Part, CONVERT(varbinary(max),f_data) AS Payload INTO #ExpectedBinary FROM dbo.BinaryData
+                """);
+
+            await RestoreSql.Execute(connection,"DROP TABLE dbo.BinaryData, dbo.Files, dbo.Surviving");
+            await SeedBinaryData(connection,analysis,"image");
+            var objectId = await RestoreSql.Scalar<int>(connection,"SELECT OBJECT_ID(N'dbo.BinaryData')");
+            var stages = new List<string>();
+            var optimized = await ApplyBinaryData(settings,sql,analysis,rewrite:true,progress:stages.Add);
+
+            Assert.Equal(new BinaryDataCleanupReport(2721,20,2700,270_000,2_160_000),baseline.BinaryDataCleanup);
+            Assert.Equal(baseline.BinaryDataCleanup,optimized.BinaryDataCleanup);
+            Assert.Contains(stages,stage=>stage.StartsWith("Возврат сохранённых строк · BinaryData",StringComparison.Ordinal));
+            Assert.Equal(objectId,await RestoreSql.Scalar<int>(connection,"SELECT OBJECT_ID(N'dbo.BinaryData')"));
+            Assert.Equal(snapshot[0]["IndexCount"],await RestoreSql.Scalar<int>(connection,
+                "SELECT COUNT(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.BinaryData')"));
+            Assert.Equal(30_000,await RestoreSql.Scalar<long>(connection,"SELECT COUNT_BIG(*) FROM dbo.BinaryData"));
+            Assert.Equal(0,await WorkTableCount(connection));
+            Assert.Equal(0,await RestoreSql.Scalar<int>(connection, """
+                SELECT CASE WHEN EXISTS (
+                    SELECT f_key,Part,CONVERT(varbinary(max),f_data) FROM dbo.BinaryData EXCEPT SELECT * FROM #ExpectedBinary
+                ) OR EXISTS (
+                    SELECT * FROM #ExpectedBinary EXCEPT SELECT f_key,Part,CONVERT(varbinary(max),f_data) FROM dbo.BinaryData
+                ) THEN 1 ELSE 0 END
+                """));
+        });
+    }
+
+    [LocalDbFact]
+    public async Task BinaryRewriteFallsBackWhenMostPayloadBytesWouldSurvive()
+    {
+        await InStage(async (settings, sql, connection, analysis) =>
+        {
+            analysis = await SeedBinaryData(connection,analysis,"varbinary(max)");
+            await RestoreSql.Execute(connection, """
+                UPDATE dbo.BinaryData SET f_data=CONVERT(varbinary(max),REPLICATE('x',120))
+                WHERE f_key>CONVERT(binary(16),2700)
+                """);
+            var stages = new List<string>();
+            var result = await ApplyBinaryData(settings,sql,analysis,rewrite:true,progress:stages.Add);
+            Assert.Equal(270_000,result.BinaryDataCleanup?.DeletedBlocks);
+            Assert.Contains("Удаление блоков BinaryData",stages);
+            Assert.DoesNotContain(stages,stage=>stage.StartsWith("Возврат сохранённых строк",StringComparison.Ordinal));
+        });
+    }
+
+    [LocalDbFact]
+    public async Task BinaryRewriteCancellationRestoresAllBlocks()
+    {
+        await InStage(async (settings, sql, connection, analysis) =>
+        {
+            analysis = await SeedBinaryData(connection,analysis,"varbinary(max)");
+            using var cancellation = new CancellationTokenSource();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                ApplyBinaryData(settings,sql,analysis,rewrite:true,token:cancellation.Token,progress:stage=>
+                {
+                    if (stage.StartsWith("Возврат сохранённых строк · BinaryData",StringComparison.Ordinal))
+                        cancellation.Cancel();
+                }));
+            Assert.Equal(300_000,await RestoreSql.Scalar<long>(connection,"SELECT COUNT_BIG(*) FROM dbo.BinaryData"));
+            Assert.Equal(0,await WorkTableCount(connection));
+        });
+    }
+
+    private static async Task<AnalysisData> SeedBinaryData(SqlConnection connection, AnalysisData analysis, string dataType)
+    {
+        await RestoreSql.Execute(connection,$"""
+            CREATE TABLE dbo.BinaryData (
+                f_key binary(16) NOT NULL, Part int NOT NULL, f_data {dataType} NULL,
+                PRIMARY KEY (f_key,Part)
+            );
+            CREATE INDEX IX_BinaryData_Part ON dbo.BinaryData(Part);
+            CREATE TABLE dbo.Files (Id int NOT NULL PRIMARY KEY, Reference varbinary(32) NOT NULL);
+            CREATE TABLE dbo.Surviving (Reference varbinary(32) NOT NULL);
+            ;WITH Numbers AS (
+                SELECT TOP (300000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS Id
+                FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN (VALUES (1),(2),(3),(4)) c(n)
+            )
+            INSERT dbo.BinaryData (f_key,Part,f_data)
+            SELECT CONVERT(binary(16),Id/100+1),Id%100,CONVERT(binary(8),Id)
+            FROM Numbers;
+            INSERT dbo.Files (Id,Reference)
+            SELECT PartKey,0x53544F52484452000000000000000000 + f_key
+            FROM (SELECT DISTINCT CONVERT(int,f_key) AS PartKey,f_key FROM dbo.BinaryData
+                  WHERE f_key<=CONVERT(binary(16),2720)) keys;
+            INSERT dbo.Files (Id,Reference)
+            VALUES (4000,0x53544F52484452000000000000000000 + CONVERT(binary(16),4000));
+            INSERT dbo.Surviving SELECT Reference FROM dbo.Files WHERE Id BETWEEN 2701 AND 2720;
+            """);
+        var files = Table("files","Files","Main","files",period:false,nullable:false,keys:["Id"]) with
+        {
+            Kind="Справочник", Rows=2721,
+            Columns=[new("Id","int",4,false,false,false),new("Reference","varbinary",32,false,false,false)]
+        };
+        var binary = Table("binary","BinaryData","System","",period:false,nullable:false,keys:["f_key","Part"]) with
+        {
+            Columns=[new("f_key","binary",16,false,false,false),new("Part","int",4,false,false,false),
+                new("f_data",dataType,-1,true,false,false)]
+        };
+        return analysis with { Tables=[files,binary] };
+    }
+
+    private static Task<ReductionResult> ApplyBinaryData(SqlSettings settings, RestoreSql sql, AnalysisData analysis,
+        bool rewrite, Action<string>? progress = null, CancellationToken token = default)
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+        {
+            ["Shrink:RewriteTables"] = rewrite.ToString(),
+            ["SqlDiagnostics:Enabled"] = "false"
+        }).Build();
+        var executor = new ReductionExecutor(sql,NullLogger<ReductionExecutor>.Instance,config);
+        return executor.Apply(settings,"DevRefreshStage_"+analysis.Id,analysis,[new("files",null)],true,
+            progress ?? (_=>{}),token,jobId:analysis.Id,cleanBinaryData:true);
+    }
+
     private static Task<int> WorkTableCount(SqlConnection connection) =>
         RestoreSql.Scalar<int>(connection, "SELECT COUNT(*) FROM sys.tables WHERE name LIKE N'[_][_]DevRefreshKeep[_]%'");
 

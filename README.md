@@ -10,6 +10,8 @@ Shrink builds can rewrite eligible tables in the temporary database when they ha
 
 Shrink builds commit ordinary deletes in batches of up to 50,000 rows and commit each table rewrite separately. If a build fails, DevRefresh cleans up the staging database. A new build starts with a restored full backup, and the previous published Shrink remains available until a replacement passes verification.
 
+`BinaryData` uses the same rewrite settings. The fast path requires at least 250,000 blocks to delete and the configured removal share to be met both by block count and by payload bytes. It uses the same unreferenced key list as batched deletion. The staging database needs room for a copy of the surviving blocks.
+
 Build in Windows PowerShell with the .NET 10 SDK.
 
     .\scripts\Build-Portable.ps1 -Kind Both

@@ -20,19 +20,6 @@ internal sealed class ShrinkTableRewriter(
         async Task<T> Observe<T>(string operation, Func<Task<T>> execute) =>
             diagnostics is null ? await execute() : await diagnostics.Run(operation, table, execute, token);
 
-        Task<long> CountedCommand(string operation, string statement) =>
-            Observe(operation, () => RestoreSql.Scalar<long>(connection,
-                statement + "; SELECT ROWCOUNT_BIG()", token, transaction));
-
-        async Task Execute(string operation, string statement)
-        {
-            await Observe(operation, async () =>
-            {
-                await RestoreSql.Execute(connection, statement, token, transaction);
-                return true;
-            });
-        }
-
         // COUNT_BIG over a projected flag also works for keep predicates containing NOT EXISTS.
         var volume = await Observe("rewrite-count-rows", async () =>
         {
@@ -68,11 +55,34 @@ internal sealed class ShrinkTableRewriter(
             "Shrink table rewrite on {Database}, table {Table}: total {TotalRows}, keep {KeptRows}, remove {RemovedRows}",
             connection.Database, source, total, kept, removed);
 
+        await Rewrite(table,keepPredicate,kept,token);
+        return removed;
+    }
+
+    internal async Task Rewrite(AnalyzedTable table, string keepPredicate, long kept, CancellationToken token)
+    {
+        var source = RestoreSql.Q(table.Schema) + "." + RestoreSql.Q(table.Table);
+        Task<T> Observe<T>(string operation, Func<Task<T>> execute) =>
+            diagnostics is null ? execute() : diagnostics.Run(operation, table, execute, token);
+
+        Task<long> CountedCommand(string operation, string statement) =>
+            Observe(operation, () => RestoreSql.Scalar<long>(connection,
+                statement + "; SELECT ROWCOUNT_BIG()", token, transaction));
+
+        async Task Execute(string operation, string statement)
+        {
+            await Observe(operation, async () =>
+            {
+                await RestoreSql.Execute(connection, statement, token, transaction);
+                return true;
+            });
+        }
+
         if (kept == 0)
         {
             progress($"Очистка таблицы · {table.LogicalName}");
             await Execute("rewrite-truncate-table", $"TRUNCATE TABLE {source}");
-            return removed;
+            return;
         }
 
         var workTable = "[dbo]." + RestoreSql.Q("__DevRefreshKeep_" + Guid.NewGuid().ToString("N"));
@@ -96,10 +106,9 @@ internal sealed class ShrinkTableRewriter(
         if (restored != kept)
             throw new InputException($"В таблицу {table.LogicalName} возвращено не ожидаемое число строк.");
         await Execute("rewrite-drop-work-table", $"DROP TABLE {workTable}");
-        return removed;
     }
 
-    private Task<bool> SupportsRewrite(AnalyzedTable table, CancellationToken token) =>
+    internal Task<bool> SupportsRewrite(AnalyzedTable table, CancellationToken token) =>
         RestoreSql.Scalar<bool>(connection, $"""
             SELECT CONVERT(bit, CASE WHEN EXISTS (
                 SELECT 1 FROM sys.tables t
@@ -109,6 +118,8 @@ internal sealed class ShrinkTableRewriter(
                   AND t.is_filetable=0 AND t.is_replicated=0 AND t.is_merge_published=0
                   AND t.is_sync_tran_subscribed=0 AND t.is_tracked_by_cdc=0
                   AND HAS_PERMS_BY_NAME(QUOTENAME(s.name)+N'.'+QUOTENAME(t.name),N'OBJECT',N'ALTER')=1
+                  AND HAS_PERMS_BY_NAME(DB_NAME(),N'DATABASE',N'CREATE TABLE')=1
+                  AND HAS_PERMS_BY_NAME(N'dbo',N'SCHEMA',N'ALTER')=1
                   AND NOT EXISTS (SELECT 1 FROM sys.change_tracking_tables ct WHERE ct.object_id=t.object_id)
                   AND NOT EXISTS (
                     SELECT 1 FROM sys.check_constraints ck

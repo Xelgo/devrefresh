@@ -5,6 +5,7 @@ namespace DevRefresh;
 internal sealed class BinaryDataCleanup
 {
     private const int BatchSize = 2_000;
+    private const int MinimumRewriteBlocks = 250_000;
     private const string Target = "[dbo].[BinaryData]";
     private const string Marker = "0x53544F52484452";
     private readonly SqlConnection connection;
@@ -102,7 +103,8 @@ internal sealed class BinaryDataCleanup
     }
 
     internal async Task<BinaryDataCleanupReport> RemoveUnreferenced(Action<string> progress, Action<string> liveProgress,
-        SqlReductionDiagnostics? diagnostics, ILogger logger, string jobId, CancellationToken token)
+        SqlReductionDiagnostics? diagnostics, ILogger logger, string jobId, CancellationToken token,
+        Func<long,long,Task<BinaryDataCleanupReport?>>? tryRewrite)
     {
         const string countCandidates = "SELECT COUNT_BIG(*) FROM #ShrinkBinaryCandidates";
         var candidates = await RestoreSql.Scalar<long>(connection,countCandidates,token);
@@ -135,6 +137,9 @@ internal sealed class BinaryDataCleanup
             }
         }
         var remaining = await RestoreSql.Scalar<long>(connection,countCandidates,token);
+        if (tryRewrite is not null && await tryRewrite(candidates,remaining) is { } rewritten)
+            return rewritten;
+
         progress("Удаление блоков BinaryData");
         await RestoreSql.Execute(connection,$"""
             CREATE TABLE #ShrinkBinaryBatch (BlobKey {KeyType} NOT NULL PRIMARY KEY);
@@ -175,5 +180,49 @@ internal sealed class BinaryDataCleanup
             if ((int)row["BatchKeys"]! < BatchSize) break;
         }
         return new(candidates,candidates-remaining,keys,blocks,bytes);
+    }
+
+    internal async Task<BinaryDataCleanupReport?> TryRewrite(AnalyzedTable table, SqlTransaction transaction,
+        SqlReductionDiagnostics? diagnostics, ILogger logger, Action<string> progress, int minimumDeletePercent,
+        long candidates, long remaining, CancellationToken token)
+    {
+        var rewriter = new ShrinkTableRewriter(connection,transaction,diagnostics,logger,progress,minimumDeletePercent);
+        if (!await rewriter.SupportsRewrite(table,token))
+            return null;
+
+        const string measure = """
+            SELECT COALESCE(SUM(b.Blocks),0) AS TotalBlocks,
+                   COALESCE(SUM(CASE WHEN d.BlobKey IS NOT NULL THEN b.Blocks END),0) AS RemovedBlocks,
+                   COUNT_BIG(d.BlobKey) AS RemovedKeys,
+                   COALESCE(SUM(b.Bytes),0) AS TotalBytes,
+                   COALESCE(SUM(CASE WHEN d.BlobKey IS NOT NULL THEN b.Bytes END),0) AS RemovedBytes
+            FROM (
+                SELECT f_key, COUNT_BIG(*) AS Blocks, SUM(CONVERT(bigint,DATALENGTH(f_data))) AS Bytes
+                FROM [dbo].[BinaryData] WITH (TABLOCK)
+                GROUP BY f_key
+            ) b
+            LEFT JOIN #ShrinkBinaryCandidates d ON d.BlobKey=b.f_key
+            """;
+        progress("Оценка объёма очистки BinaryData");
+        Task<List<Dictionary<string,object?>>> Measure() => RestoreSql.Query(connection,measure,token,transaction);
+        var volume = (diagnostics is null ? await Measure()
+            : await diagnostics.Run("binarydata-measure-rewrite",table,Measure,token)).Single();
+        var totalBlocks = (long)volume["TotalBlocks"]!;
+        var removedBlocks = (long)volume["RemovedBlocks"]!;
+        var removedKeys = (long)volume["RemovedKeys"]!;
+        var totalBytes = (long)volume["TotalBytes"]!;
+        var removedBytes = (long)volume["RemovedBytes"]!;
+        var useRewrite = removedBlocks >= MinimumRewriteBlocks
+            && removedBlocks * 100m >= totalBlocks * (decimal)minimumDeletePercent
+            && removedBytes * 100m >= totalBytes * (decimal)minimumDeletePercent;
+        logger.LogInformation(
+            "Shrink BinaryData strategy {Strategy} for {Database}: remove {RemovedBlocks}/{TotalBlocks} blocks, {RemovedBytes}/{TotalBytes} payload bytes",
+            useRewrite ? "rewrite" : "delete",connection.Database,removedBlocks,totalBlocks,removedBytes,totalBytes);
+        if (!useRewrite)
+            return null;
+
+        const string keep = "NOT EXISTS (SELECT 1 FROM #ShrinkBinaryCandidates d WHERE d.BlobKey=s.f_key)";
+        await rewriter.Rewrite(table,keep,totalBlocks-removedBlocks,token);
+        return new(candidates,candidates-remaining,removedKeys,removedBlocks,removedBytes);
     }
 }
