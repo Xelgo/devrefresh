@@ -9,7 +9,8 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
 {
     private sealed record DeleteSet(AnalyzedTable Table,string Name);
     private sealed record FilteredDelete(AnalyzedTable Table,string Predicate,bool ByPeriod=false,DateTime? Cutoff=null,bool FullTable=false);
-    private const int AuxiliaryDeleteBatchSize = 250_000;
+    private const int LegacyDeleteBatchSize = 250_000;
+    private const int ShrinkDeleteBatchSize = 50_000;
     private static string Q(string s)=>RestoreSql.Q(s);
     private static string Table(AnalyzedTable t)=>Q(t.Schema)+"."+Q(t.Table);
     private static string KeyJoin(AnalyzedTable t,string left,string right)=>string.Join(" AND ",t.Keys.Select(k=>$"({left}.{Q(k)}={right}.{Q(k)} OR ({left}.{Q(k)} IS NULL AND {right}.{Q(k)} IS NULL))"));
@@ -35,11 +36,14 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
     }
 
     private static async Task<long> DeleteAuxiliary(
-        SqlConnection connection,SqlTransaction transaction,FilteredDelete deletion,Action<string> progress,
+        SqlConnection connection,SqlTransaction? transaction,FilteredDelete deletion,Action<string> progress,
         SqlReductionDiagnostics? diagnostics,CancellationToken token)
     {
         var table = deletion.Table;
+        var batchSize = transaction is null ? ShrinkDeleteBatchSize : LegacyDeleteBatchSize;
         var where = $"FROM {Table(table)} s WHERE ({deletion.Predicate})";
+        var deleteFrom = transaction is null
+            ? $"FROM {Table(table)} s WITH (TABLOCKX) WHERE ({deletion.Predicate})" : where;
         var stage = $"Удаление связанных строк · {table.LogicalName}";
         progress(stage);
         var lastProgress = Stopwatch.StartNew();
@@ -49,7 +53,7 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
         async Task DeleteBatches(string filter,DateTime? from=null,DateTime? until=null,object? scope=null)
         {
             await using var command = new SqlCommand(
-                $"DELETE TOP ({AuxiliaryDeleteBatchSize}) s {where}{filter}; SELECT ROWCOUNT_BIG()",connection,transaction)
+                $"DELETE TOP ({batchSize}) s {deleteFrom}{filter}; SELECT ROWCOUNT_BIG()",connection,transaction)
                 {CommandTimeout=RestoreSql.LongCommandTimeoutSeconds};
             if (from is not null) command.Parameters.Add("@periodFrom",SqlDbType.DateTime2).Value = from.Value;
             if (until is not null) command.Parameters.Add("@periodUntil",SqlDbType.DateTime2).Value = until.Value;
@@ -60,14 +64,14 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
                 token.ThrowIfCancellationRequested();
                 async Task<long> ExecuteBatch() => (long)(await command.ExecuteScalarAsync(token))!;
                 rows = diagnostics is null ? await ExecuteBatch()
-                    : await diagnostics.Run("delete-auxiliary-batch",table,ExecuteBatch,token,++batch,total,from,AuxiliaryDeleteBatchSize);
+                    : await diagnostics.Run("delete-auxiliary-batch",table,ExecuteBatch,token,++batch,total,from,batchSize);
                 total += rows;
-                if (lastProgress.Elapsed >= TimeSpan.FromSeconds(10))
+                if ((transaction is null && rows > 0 && total == rows) || lastProgress.Elapsed >= TimeSpan.FromSeconds(10))
                 {
                     progress($"{stage} · {total:N0} строк");
                     lastProgress.Restart();
                 }
-            } while (rows == AuxiliaryDeleteBatchSize);
+            } while (rows == batchSize);
         }
 
         // For an indexed period, move forward through disjoint ranges to avoid revisiting earlier pages.
@@ -77,11 +81,11 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
             && table.Fields.Any(f=>f.Column==table.Keys[0] && f.Purpose.Contains("UseDataSeparation",StringComparison.Ordinal))
             && table.Columns.Any(c=>c.Name==table.Keys[0] && !c.Nullable)
             ? $"s.{Q(table.Keys[0])}" : null;
-        var usePeriodRanges = deletion.ByPeriod && table.Rows > AuxiliaryDeleteBatchSize
+        var usePeriodRanges = deletion.ByPeriod && table.Rows > batchSize
             && (periodPosition == 0 || scopeColumn is not null)
             && table.Columns.Any(c=>c.Name=="_Period" && c.SqlType=="datetime2" && !c.Nullable);
         if (diagnostics is not null)
-            await diagnostics.RecordTable(table,usePeriodRanges,AuxiliaryDeleteBatchSize,deletion.Cutoff,token);
+            await diagnostics.RecordTable(table,usePeriodRanges,batchSize,deletion.Cutoff,token);
         if (!usePeriodRanges)
         {
             await DeleteBatches("");
@@ -129,16 +133,20 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
         await using var cn=await sql.Open(settings,database,token);
         if(await RestoreSql.Scalar<int>(cn,"SELECT COUNT(*) FROM sys.triggers WHERE parent_class=1 AND is_disabled=0",token)>0 || await RestoreSql.Scalar<int>(cn,"SELECT COUNT(*) FROM sys.foreign_keys",token)>0)
             throw new InputException("В базе есть SQL-триггеры или внешние ключи: автоматическое сокращение требует отдельной проверки.");
-        var binaryCleanup = cleanBinaryData && selected.Length>0 ? await BinaryDataCleanup.Start(cn,analysis.Id,token) : null;
+        var isolatedShrink = cleanBinaryData && selected.Length>0;
+        // Start verifies that this database belongs to the Shrink build, even when BinaryData is absent.
+        var binaryCleanup = isolatedShrink ? await BinaryDataCleanup.Start(cn,analysis.Id,token) : null;
+        var rewriteTables = isolatedShrink && configuration.GetValue("Shrink:RewriteTables",true);
+        var rewriteMinDeletePercent = rewriteTables
+            ? Math.Clamp(configuration.GetValue("Shrink:RewriteMinDeletePercent",70),51,100) : 70;
+        if (isolatedShrink)
+            await RestoreSql.Execute(cn,"SET IMPLICIT_TRANSACTIONS OFF; SET TRANSACTION ISOLATION LEVEL READ COMMITTED",token);
         var all=analysis.Tables;var lookup=all.ToDictionary(x=>x.Key);var sets=new Dictionary<string,DeleteSet>(StringComparer.Ordinal);
         var notes=new List<string>();var counts=new List<DeletionCount>();
-        var tx=(SqlTransaction)await cn.BeginTransactionAsync(IsolationLevel.Serializable,token);
+        SqlTransaction? tx = isolatedShrink ? null : (SqlTransaction)await cn.BeginTransactionAsync(IsolationLevel.Serializable,token);
         var diagnostics = jobId is not null && configuration.GetValue("SqlDiagnostics:Enabled",true)
             ? new SqlReductionDiagnostics(sql,settings,cn,logger,jobId) : null;
-        // cleanBinaryData is exclusive to owned Shrink builds. Start above verifies the ownership marker.
-        var rewriter = cleanBinaryData && configuration.GetValue("Shrink:RewriteTables",true)
-            ? new ShrinkTableRewriter(cn,tx,diagnostics,logger,liveProgress??progress,
-                Math.Clamp(configuration.GetValue("Shrink:RewriteMinDeletePercent",70),51,100)) : null;
+        var reportProgress = liveProgress ?? progress;
         (string Action, AnalyzedTable Table)? currentOperation = null;
         var rollbackStarted = false;
         var reductionFailed = false;
@@ -166,12 +174,110 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
         async Task Rollback()
         {
             rollbackStarted = true;
-            if (tx.Connection is not null)
+            if (tx?.Connection is not null)
             {
                 recordStage?.Invoke(previewOnly ? "Завершение транзакции проверки плана" : "Откат сокращения");
                 // SqlTransaction.Rollback uses the connection timeout. Use the long command timeout instead.
                 await Execute("rollback",null,"IF XACT_STATE() <> 0 ROLLBACK TRANSACTION",CancellationToken.None);
             }
+        }
+
+        async Task<T> InShrinkTransaction<T>(AnalyzedTable table, Func<SqlTransaction,Task<T>> work)
+        {
+            var local = (SqlTransaction)await cn.BeginTransactionAsync(IsolationLevel.ReadCommitted,token);
+            var failed = false;
+            try
+            {
+                var result = await work(local);
+                token.ThrowIfCancellationRequested();
+                await RestoreSql.Execute(cn,"COMMIT TRANSACTION",token,local);
+                return result;
+            }
+            catch
+            {
+                failed = true;
+                if (local.Connection is not null)
+                {
+                    try
+                    {
+                        await RestoreSql.Execute(cn,"IF XACT_STATE() <> 0 ROLLBACK TRANSACTION",CancellationToken.None,local);
+                    }
+                    catch (Exception error)
+                    {
+                        logger.LogWarning(error,"Не удалось подтвердить откат операции Shrink для {Database}, {Table}",
+                            database,Table(table));
+                    }
+                }
+                throw;
+            }
+            finally
+            {
+                try { local.Dispose(); }
+                catch (Exception error) when (failed)
+                {
+                    logger.LogWarning(error,"Ошибка освобождения транзакции Shrink для {Database}, {Table}",
+                        database,Table(table));
+                }
+            }
+        }
+
+        Task<long?> TryRewrite(AnalyzedTable table, string keep, string? deleteKeys = null) =>
+            rewriteTables && ShrinkTableRewriter.IsLargeEnough(table)
+                ? InShrinkTransaction(table, local =>
+                    new ShrinkTableRewriter(cn,local,diagnostics,logger,reportProgress,rewriteMinDeletePercent)
+                        .TryRewrite(table,keep,token,deleteKeys))
+                : Task.FromResult<long?>(null);
+
+        async Task<long> DeleteSelectedInBatches(DeleteSet set, string keyMatch)
+        {
+            var table = set.Table;
+            var keys = string.Join(",",table.Keys.Select(Q));
+            var emittedKeys = string.Join(",",table.Keys.Select(key=>"deleted."+Q(key)));
+            var keyBatch = set.Name+"Batch";
+            await RestoreSql.Execute(cn,$"""
+                SELECT TOP(0) {keys} INTO {keyBatch} FROM {set.Name};
+                CREATE UNIQUE CLUSTERED INDEX ix ON {keyBatch}({keys});
+                """,token);
+
+            var stage = $"Удаление выбранных строк · {table.LogicalName}";
+            reportProgress(stage);
+            var lastProgress = Stopwatch.StartNew();
+            long total = 0;
+            long batch = 0;
+            long rows;
+            do
+            {
+                token.ThrowIfCancellationRequested();
+                Task<long> RunBatch() => InShrinkTransaction(table, async local =>
+                {
+                    var result = (await RestoreSql.Query(cn,$"""
+                        TRUNCATE TABLE {keyBatch};
+                        ;WITH BatchKeys AS (
+                            SELECT TOP ({ShrinkDeleteBatchSize}) {keys} FROM {set.Name} ORDER BY {keys}
+                        )
+                        DELETE FROM BatchKeys OUTPUT {emittedKeys} INTO {keyBatch} ({keys});
+                        DECLARE @picked bigint=ROWCOUNT_BIG();
+                        DELETE s FROM {Table(table)} s WITH (TABLOCKX)
+                        JOIN {keyBatch} d ON {keyMatch};
+                        SELECT @picked AS Picked, ROWCOUNT_BIG() AS Removed;
+                        """,token,local)).Single();
+                    var removed = (long)result["Removed"]!;
+                    if (removed != (long)result["Picked"]!)
+                        throw new InputException($"Число удалённых строк не совпало со списком ключей для {table.LogicalName}.");
+                    return removed;
+                });
+                rows = diagnostics is null ? await RunBatch()
+                    : await diagnostics.Run("delete-selected-batch",table,RunBatch,token,++batch,total,batchSize:ShrinkDeleteBatchSize);
+                total += rows;
+                if ((rows > 0 && total == rows) || lastProgress.Elapsed >= TimeSpan.FromSeconds(10))
+                {
+                    reportProgress($"{stage} · {total:N0} строк");
+                    lastProgress.Restart();
+                }
+            } while (rows == ShrinkDeleteBatchSize);
+
+            await RestoreSql.Execute(cn,$"DROP TABLE {keyBatch}",token);
+            return total;
         }
 
         try
@@ -298,8 +404,8 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
                 }
                 else
                 {
-                    var rewritten = rewriter is null ? null : await rewriter.TryRewrite(table,KeepAuxiliaryRows(deletion),token);
-                    rows = rewritten ?? await DeleteAuxiliary(cn,tx,deletion,liveProgress??progress,diagnostics,token);
+                    var rewritten = await TryRewrite(table,KeepAuxiliaryRows(deletion));
+                    rows = rewritten ?? await DeleteAuxiliary(cn,tx,deletion,reportProgress,diagnostics,token);
                 }
                 counts.Add(new(table.LogicalName,table.Table,rows,"Связанные данные"));
             }
@@ -317,6 +423,7 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
                 return new([..counts],[..notes],counts.Sum(c=>c.Rows));
             }
             var fullyCleared = rules.Where(rule=>rule.Before is null).Select(rule=>rule.Key).ToHashSet(StringComparer.Ordinal);
+            var changedTables = new HashSet<string>(StringComparer.Ordinal);
             progress("Удаление выбранных данных");
             foreach(var set in sets.Values.Reverse())
             {
@@ -327,16 +434,17 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
                 var fullTable = fullyCleared.Contains(set.Table.Key);
                 if (fullTable) await CaptureBinaryKeys(set.Table,join,"1=1");
                 var keep = $"NOT EXISTS (SELECT 1 FROM {set.Name} d WHERE {keyMatch})";
-                var rewritten = rewriter is null ? null : await rewriter.TryRewrite(set.Table,keep,token,deleteKeyTable:set.Name);
-                var rows=rewritten ?? await Observe("delete-selected-rows",set.Table,
-                    ()=>RestoreSql.Scalar<long>(cn,$"DELETE s FROM {Table(set.Table)} s {join}; SELECT CONVERT(bigint,@@ROWCOUNT)",token,tx),token);
+                var rewritten = await TryRewrite(set.Table,keep,set.Name);
+                var rows = rewritten ?? (isolatedShrink && set.Table.Rows > ShrinkDeleteBatchSize
+                    ? await DeleteSelectedInBatches(set,keyMatch)
+                    : await Observe("delete-selected-rows",set.Table,
+                        ()=>RestoreSql.Scalar<long>(cn,$"DELETE s FROM {Table(set.Table)} s{(isolatedShrink?" WITH (TABLOCKX)":"")} {join}; SELECT ROWCOUNT_BIG()",token,tx),token));
+                if (rows>0) changedTables.Add(set.Table.Key);
                 counts.Add(new(set.Table.LogicalName,set.Table.Table,rows,rules.Any(r=>r.Key==set.Table.Key)?"Выбрано / обязательно":"Связанные данные"));
             }
             var rebuildingSlices = false;
-            foreach(var root in selectedRegisters.Where(t=>t.Kind=="РегистрСведений"))
+            foreach(var root in selectedRegisters.Where(t=>t.Kind=="РегистрСведений" && changedTables.Contains(t.Key)))
             {
-                currentOperation = ("подсчёт удалённых строк регистра", root);
-                if(await RestoreSql.Scalar<long>(cn,$"SELECT COUNT_BIG(*) FROM {sets[root.Key].Name}",token,tx,RestoreSql.LongCommandTimeoutSeconds)==0)continue;
                 foreach(var slice in all.Where(t=>t.RootKey==root.Key&&t.Role is "SliceFirst" or "SliceLast"))
                 {
                     if (!rebuildingSlices)
@@ -353,13 +461,22 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
                     var ordering=string.Join(",",new[]{root.DateColumn}.Concat(root.Keys.Where(k=>k!=root.DateColumn)).Select(k=>Q(k)+" "+order));
                     var active=root.Columns.Any(c=>c.Name=="_Active")?" WHERE [_Active]=0x01":"";
                     var names=string.Join(",",slice.Columns.Select(c=>Q(c.Name)));
-                    await Execute("rebuild-register-slice",slice,$"DELETE FROM {Table(slice)}; INSERT INTO {Table(slice)}({names}) SELECT {names} FROM(SELECT *,ROW_NUMBER() OVER(PARTITION BY {string.Join(",",dimensionColumns.Select(Q))} ORDER BY {ordering}) AS __dr_row FROM {Table(root)}{active}) d WHERE __dr_row=1",token);
+                    var insert = $"INSERT INTO {Table(slice)}({names}) SELECT {names} FROM(SELECT *,ROW_NUMBER() OVER(PARTITION BY {string.Join(",",dimensionColumns.Select(Q))} ORDER BY {ordering}) AS __dr_row FROM {Table(root)}{active}) d WHERE __dr_row=1";
+                    if (isolatedShrink)
+                    {
+                        await DeleteAuxiliary(cn,null,new(slice,"1=1"),reportProgress,diagnostics,token);
+                        await Execute("rebuild-register-slice",slice,insert,token);
+                    }
+                    else
+                    {
+                        await Execute("rebuild-register-slice",slice,$"DELETE FROM {Table(slice)}; {insert}",token);
+                    }
                     counts.Add(new(slice.LogicalName,slice.Table,0,"Срез перестроен по оставшимся записям"));
                 }
             }
             currentOperation = null;
             if(rollbackOnly)await Rollback();
-            else
+            else if (tx is not null)
             {
                 progress("Фиксация сокращения");
                 // SqlTransaction.Commit uses the connection timeout, just like Rollback.
@@ -385,7 +502,7 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
         catch (Exception error)
         {
             reductionFailed = true;
-            if (!rollbackStarted && !committed)
+            if (tx is not null && !rollbackStarted && !committed)
             {
                 try { await Rollback(); }
                 catch (Exception rollbackError)
@@ -401,7 +518,7 @@ public sealed class ReductionExecutor(RestoreSql sql, ILogger<ReductionExecutor>
         }
         finally
         {
-            try { tx.Dispose(); }
+            try { tx?.Dispose(); }
             catch (Exception cleanupError) when (reductionFailed)
             {
                 logger.LogError(cleanupError, "Ошибка освобождения транзакции сокращения базы {Database}", database);

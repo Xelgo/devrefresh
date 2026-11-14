@@ -8,10 +8,12 @@ internal sealed class ShrinkTableRewriter(
 {
     private const long MinimumRows = 250_000;
 
+    internal static bool IsLargeEnough(AnalyzedTable table) => table.Rows >= MinimumRows;
+
     internal async Task<long?> TryRewrite(AnalyzedTable table, string keepPredicate,
         CancellationToken token, string? deleteKeyTable = null)
     {
-        if (table.Rows < MinimumRows || !await SupportsRewrite(table, token))
+        if (!await SupportsRewrite(table, token))
             return null;
 
         var source = RestoreSql.Q(table.Schema) + "." + RestoreSql.Q(table.Table);
@@ -36,7 +38,7 @@ internal sealed class ShrinkTableRewriter(
         {
             if (deleteKeyTable is not null)
             {
-                // The unique key set was built from this still-unmodified source in this transaction.
+                // The unique key set was built earlier in this session against the private staging database.
                 var counts = await RestoreSql.Query(connection, $"""
                     SELECT (SELECT COUNT_BIG(*) FROM {source} WITH (TABLOCK)) AS TotalRows,
                            (SELECT COUNT_BIG(*) FROM {deleteKeyTable}) AS RemovedRows
@@ -83,8 +85,7 @@ internal sealed class ShrinkTableRewriter(
         if (copied != kept)
             throw new InputException($"Число сохранённых строк изменилось для {table.LogicalName}.");
 
-        // The original table, its indexes and all work-table DDL share the reduction transaction.
-        // A failure from this point must roll back the reduction, including the truncate.
+        // The original table and the working copy share the table's transaction.
         await Execute("rewrite-truncate-table", $"TRUNCATE TABLE {source}");
         progress($"Возврат сохранённых строк · {table.LogicalName} · {kept:N0} строк");
         token.ThrowIfCancellationRequested();

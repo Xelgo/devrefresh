@@ -8,6 +8,8 @@ For the first upgrade to 0.2.39, use the existing offline update process. For su
 
 Shrink builds can rewrite eligible tables in the temporary database when they have at least 250,000 rows and the reduction will remove at least 70%. The service copies the rows to keep, truncates the original table, restores the saved rows, and drops the working table in the same transaction. This uses temporary space in the staging database. Set `"Shrink": { "RewriteTables": false }` in `config/server.json` and restart the service to use the original delete strategy for all tables. The optional `RewriteMinDeletePercent` setting accepts a threshold from 51 to 100.
 
+Shrink builds commit ordinary deletes in batches of up to 50,000 rows and commit each table rewrite separately. If a build fails, DevRefresh cleans up the staging database. A new build starts with a restored full backup, and the previous published Shrink remains available until a replacement passes verification.
+
 Build in Windows PowerShell with the .NET 10 SDK.
 
     .\scripts\Build-Portable.ps1 -Kind Both

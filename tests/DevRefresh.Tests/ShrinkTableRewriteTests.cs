@@ -25,7 +25,7 @@ public sealed class ShrinkTableRewriteTests
             await SeedRows(connection);
             var objects = await ReadObjects(connection);
 
-            var baseline = await Apply(settings, sql, analysis, rewrite: false);
+            var baseline = await Apply(settings, sql, analysis, rewrite: false, shrinkBuild: false);
             await RestoreSql.Execute(connection, """
                 SELECT * INTO #ExpectedMain FROM dbo.Movements;
                 SELECT * INTO #ExpectedDetail FROM dbo.Dimensions;
@@ -70,8 +70,8 @@ public sealed class ShrinkTableRewriteTests
                         cancellation.Cancel();
                 }));
             Assert.Equal(300_000, await RestoreSql.Scalar<long>(connection, "SELECT COUNT_BIG(*) FROM dbo.Movements"));
-            Assert.Equal(300_000, await RestoreSql.Scalar<long>(connection, "SELECT COUNT_BIG(*) FROM dbo.Dimensions"));
-            Assert.Equal(300_000, await RestoreSql.Scalar<long>(connection, "SELECT COUNT_BIG(*) FROM dbo.Totals"));
+            Assert.Equal(72_000, await RestoreSql.Scalar<long>(connection, "SELECT COUNT_BIG(*) FROM dbo.Dimensions"));
+            Assert.Equal(0, await RestoreSql.Scalar<long>(connection, "SELECT COUNT_BIG(*) FROM dbo.Totals"));
             Assert.Equal(0, await WorkTableCount(connection));
         });
     }
@@ -96,6 +96,58 @@ public sealed class ShrinkTableRewriteTests
         });
     }
 
+    [LocalDbFact]
+    public async Task CancellationLeavesOnlyCompletedDeleteBatchesCommitted()
+    {
+        await InStage(async (settings, sql, connection, analysis) =>
+        {
+            foreach (var stagePrefix in new[] { "Удаление связанных строк · detail · ", "Удаление выбранных строк · totals · " })
+            {
+                await SeedRows(connection);
+                using var cancellation = new CancellationTokenSource();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                    Apply(settings, sql, analysis, rewrite: false, token: cancellation.Token, progress: stage =>
+                    {
+                        if (stage.StartsWith(stagePrefix,StringComparison.Ordinal))
+                            cancellation.Cancel();
+                    }));
+                bool cancelledOnDetail = stagePrefix.Contains("detail",StringComparison.Ordinal);
+                Assert.Equal(cancelledOnDetail ? 250_000 : 72_000,
+                    await RestoreSql.Scalar<long>(connection, "SELECT COUNT_BIG(*) FROM dbo.Dimensions"));
+                Assert.Equal(cancelledOnDetail ? 300_000 : 250_000,
+                    await RestoreSql.Scalar<long>(connection, "SELECT COUNT_BIG(*) FROM dbo.Totals"));
+                Assert.Equal(300_000,
+                    await RestoreSql.Scalar<long>(connection, "SELECT COUNT_BIG(*) FROM dbo.Movements"));
+            }
+        });
+    }
+
+    [LocalDbFact]
+    public async Task SliceIsRebuiltAfterDeleteKeyBatchesAreConsumed()
+    {
+        await InStage(async (settings, sql, connection, analysis) =>
+        {
+            await SeedRows(connection);
+            await RestoreSql.Execute(connection, "SELECT * INTO dbo.SliceLast FROM dbo.Movements");
+            var root = analysis.Tables[0] with
+            {
+                Kind = "РегистрСведений",
+                Fields = [new("Измерение","Payload","Dimension","","")]
+            };
+            var slice = root with
+            {
+                Key = "slice", Table = "SliceLast", Role = "SliceLast", DateColumn = null, CanSelect = false
+            };
+            var result = await Apply(settings, sql, analysis with
+            {
+                Tables = [root, .. analysis.Tables[1..], slice]
+            }, rewrite: false);
+            Assert.Contains(result.Deleted,item => item.Table=="SliceLast");
+            Assert.Equal(60_000,await RestoreSql.Scalar<long>(connection,"SELECT COUNT_BIG(*) FROM dbo.SliceLast"));
+            Assert.Equal(240_001,await RestoreSql.Scalar<int>(connection,"SELECT MIN(Id) FROM dbo.SliceLast"));
+        });
+    }
+
     private static Task<int> WorkTableCount(SqlConnection connection) =>
         RestoreSql.Scalar<int>(connection, "SELECT COUNT(*) FROM sys.tables WHERE name LIKE N'[_][_]DevRefreshKeep[_]%'");
 
@@ -107,7 +159,7 @@ public sealed class ShrinkTableRewriteTests
             """)).SelectMany(row => new[] { (int)row["object_id"]!, (int)row["index_id"]! }).ToArray();
 
     private static Task<ReductionResult> Apply(SqlSettings settings, RestoreSql sql, AnalysisData analysis, bool rewrite,
-        Action<string>? progress = null, CancellationToken token = default)
+        Action<string>? progress = null, CancellationToken token = default, bool shrinkBuild = true)
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
@@ -117,7 +169,7 @@ public sealed class ShrinkTableRewriteTests
         var executor = new ReductionExecutor(sql, NullLogger<ReductionExecutor>.Instance, config);
         return executor.Apply(settings, "DevRefreshStage_" + analysis.Id, analysis,
             [new("main","2025-01-01"), new("totals",null)], true, progress ?? (_ => { }), token,
-            jobId: analysis.Id, cleanBinaryData: true);
+            jobId: analysis.Id, cleanBinaryData: shrinkBuild);
     }
 
     private static Task SeedRows(SqlConnection connection) => RestoreSql.Execute(connection, """
