@@ -303,7 +303,7 @@ function inspectDatabase(index) {
 
 document.addEventListener("submit", async event => {
   const form = event.target;
-  if (!(form instanceof HTMLFormElement)) return;
+  if (!(form instanceof HTMLFormElement) || form.method === "dialog") return;
   event.preventDefault();
   if (form.id === "setup-form" || form.id === "login-form") {
     const setup = form.id === "setup-form";
