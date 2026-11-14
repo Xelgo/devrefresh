@@ -1,5 +1,6 @@
 using System.Data;
 using System.Diagnostics;
+using System.Globalization;
 using Microsoft.Data.SqlClient;
 
 namespace DevRefresh;
@@ -146,11 +147,13 @@ public sealed class RestoreSql(SettingsService settings)
     }
 
     private const long BytesPerMiB = 1024L * 1024;
+    private static readonly CultureInfo RussianCulture = CultureInfo.GetCultureInfo("ru-RU");
 
     private sealed record DataFile(int Id, long AllocatedBytes, int? UsedPages, bool CanShrink)
     {
         public int? TargetMiB => UsedPages is int used ? Math.Max(1,(int)Math.Ceiling(used*1.05m/128)) : null;
         public long? TargetBytes => TargetMiB * BytesPerMiB;
+        public bool NeedsShrink => CanShrink && (TargetBytes is not long target || AllocatedBytes > target);
     }
 
     private static async Task<DataFile[]> ReadDataFiles(SqlConnection connection, CancellationToken token)
@@ -217,13 +220,16 @@ public sealed class RestoreSql(SettingsService settings)
         return files;
     }
 
-    public static async Task<WorkflowFileOptimization> OptimizeFiles(SqlConnection connection,Action<string> progress,
+    public async Task<WorkflowFileOptimization> OptimizeFiles(SqlSettings settings,SqlConnection connection,
+        Action<string> progress,Action<string> liveProgress,
         CancellationToken token,bool deletedRows=false,long? expectedUsedBytes=null,Action<WorkflowFileSize>? recordSize=null,
         ILogger? logger=null,string? jobId=null,bool lowPriority=false)
     {
         var shrinkOptions=lowPriority ? "WAIT_AT_LOW_PRIORITY (ABORT_AFTER_WAIT = SELF), NO_INFOMSGS" : "NO_INFOMSGS";
         const int logTargetMiB = 1024;
         const long minimumRetrySavingsBytes = 256 * BytesPerMiB;
+        const string firstPass = "Освобождение места в файлах данных";
+        const string secondPass = "Повторное освобождение места в файлах данных";
         var clock=Stopwatch.StartNew();
         void LogSample(string phase,DataFile[] files)
         {
@@ -253,7 +259,9 @@ public sealed class RestoreSql(SettingsService settings)
         if(recordSize is not null)
             recordSize(await ReadFileSize(connection,"Перед первым сжатием файлов данных",token));
         var targets = new Dictionary<int, long?>();
-        progress("Освобождение места в файлах данных");
+        progress(firstPass);
+        var fileCount = dataFiles.Count(file=>file.NeedsShrink);
+        var fileNumber = 0;
         foreach (var file in dataFiles)
         {
             if (!file.CanShrink)
@@ -264,13 +272,16 @@ public sealed class RestoreSql(SettingsService settings)
             if (file.TargetBytes is long targetBytes)
             {
                 targets[file.Id] = Math.Min(file.AllocatedBytes, targetBytes);
-                if (file.AllocatedBytes > targetBytes)
-                    await Execute(connection,$"DBCC SHRINKFILE({file.Id},{file.TargetMiB}) WITH {shrinkOptions}",token);
             }
             else
             {
                 targets[file.Id] = null;
-                await Execute(connection,$"DBCC SHRINKFILE({file.Id},TRUNCATEONLY) WITH {shrinkOptions}",token);
+            }
+            if (file.NeedsShrink)
+            {
+                var target = file.TargetMiB?.ToString(CultureInfo.InvariantCulture) ?? "TRUNCATEONLY";
+                await ShrinkDataFile(settings,connection,$"DBCC SHRINKFILE({file.Id},{target}) WITH {shrinkOptions}",
+                    firstPass,++fileNumber,fileCount,liveProgress,logger,jobId,token);
             }
         }
 
@@ -290,10 +301,12 @@ public sealed class RestoreSql(SettingsService settings)
         {
             logger?.LogInformation("SQL shrink second pass for job {JobId} on {Database}. Lower target and reclaimable space above the per-file minimum of {MinimumSavingsMiB} MiB or one percent. Files {FileIds}",
                 jobId,connection.Database,minimumRetrySavingsBytes/BytesPerMiB,retryFiles.Select(file=>file.Id).ToArray());
-            progress("Повторное освобождение места в файлах данных");
+            progress(secondPass);
+            fileNumber = 0;
             foreach (var file in retryFiles)
             {
-                await Execute(connection,$"DBCC SHRINKFILE({file.Id},{file.TargetMiB}) WITH {shrinkOptions}",token);
+                await ShrinkDataFile(settings,connection,$"DBCC SHRINKFILE({file.Id},{file.TargetMiB}) WITH {shrinkOptions}",
+                    secondPass,++fileNumber,retryFiles.Length,liveProgress,logger,jobId,token);
                 targets[file.Id] = file.TargetBytes;
             }
             LogSample("after-second-pass",await ReadDataFiles(connection,token));
@@ -327,5 +340,65 @@ public sealed class RestoreSql(SettingsService settings)
         }
         long? dataTargetBytes = targets.Values.Contains(null) ? null : targets.Values.Sum();
         return new(dataTargetBytes,logTargetBytes);
+    }
+
+    private async Task ShrinkDataFile(SqlSettings settings,SqlConnection connection,string sql,string stage,
+        int fileNumber,int fileCount,Action<string> liveProgress,ILogger? logger,string? jobId,CancellationToken token)
+    {
+        var label = fileCount > 1 ? $"{stage} · файл {fileNumber}/{fileCount}" : stage;
+        if (fileCount > 1)
+            liveProgress(label);
+        var sessionId = connection.ServerProcessId;
+        var database = connection.Database;
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var observation = Observe();
+        try
+        {
+            await Execute(connection,sql,token);
+        }
+        finally
+        {
+            await stop.CancelAsync();
+            await observation;
+        }
+
+        async Task Observe()
+        {
+            var cancellation = stop.Token;
+            try
+            {
+                // A separate session can query the worker while DBCC has the main connection busy.
+                using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+                if (!await timer.WaitForNextTickAsync(cancellation)) return;
+                using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+                connectTimeout.CancelAfter(TimeSpan.FromSeconds(3));
+                await using var observer = await Open(settings,token:connectTimeout.Token);
+                await using var command = new SqlCommand("""
+                    SELECT percent_complete FROM sys.dm_exec_requests
+                    WHERE session_id=@session AND database_id=DB_ID(@database)
+                    """,observer) { CommandTimeout=3 };
+                command.Parameters.Add("@session",SqlDbType.Int).Value = sessionId;
+                command.Parameters.Add("@database",SqlDbType.NVarChar,128).Value = database;
+                string? last = null;
+                do
+                {
+                    if (await command.ExecuteScalarAsync(cancellation) is float percent && percent is >= 0 and <= 100)
+                    {
+                        var displayed = percent.ToString("0.0",RussianCulture);
+                        if (displayed != last && !cancellation.IsCancellationRequested)
+                        {
+                            liveProgress($"{label} · {displayed}%");
+                            last = displayed;
+                        }
+                    }
+                } while (await timer.WaitForNextTickAsync(cancellation));
+            }
+            catch (Exception) when (cancellation.IsCancellationRequested) { }
+            catch (Exception error)
+            {
+                logger?.LogDebug(error,"SQL shrink progress unavailable for job {JobId} on {Database}, SPID {SqlSessionId}",
+                    jobId,database,sessionId);
+            }
+        }
     }
 }

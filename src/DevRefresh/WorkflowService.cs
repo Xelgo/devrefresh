@@ -445,10 +445,11 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
         var settings=job.Request.Settings;
         var previous=store.GetExecutionReport(id)!;
         var timing=new WorkflowRunTiming(previous,PrepareBackgroundMaintenance);
+        void LiveProgress(string text)=>store.UpdateJob(id,"Running",text);
         void Progress(string text)
         {
             timing.ChangeStage(text);
-            store.UpdateJob(id,"Running",text);
+            LiveProgress(text);
         }
         var status="Succeeded";
         string? message=null;
@@ -469,7 +470,7 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
             else
             {
                 await using var connection=await sql.Open(settings,database,token);
-                timing.FileOptimization=await RestoreSql.OptimizeFiles(connection,Progress,token,
+                timing.FileOptimization=await sql.OptimizeFiles(settings,connection,Progress,LiveProgress,token,
                     recordSize:timing.FileSizes.Add,logger:logger,jobId:id,lowPriority:true);
                 await CaptureDeveloperSize(connection,database,"После освобождения места",timing,Progress,token);
             }
@@ -648,7 +649,7 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
         await CaptureSize("Перед освобождением места");
         progress("Подготовка освобождения места");
         await using var connection=await sql.Open(settings,database,token);
-        timing.FileOptimization=await RestoreSql.OptimizeFiles(connection,progress,token,
+        timing.FileOptimization=await sql.OptimizeFiles(settings,connection,progress,liveProgress,token,
             deletedRows:reduction.TotalRows>0 || reduction.BinaryDataCleanup is {DeletedBlocks:>0},
             expectedUsedBytes:expectedUsedBytes,recordSize:timing.FileSizes.Add,
             logger:logger,jobId:job.Id);
