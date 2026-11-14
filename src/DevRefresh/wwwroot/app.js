@@ -166,6 +166,12 @@ function settingsPage() {
           <div class="field full"><label for="shrink-backup-directory">Путь для приложения</label><input id="shrink-backup-directory" name="shrinkBackupDirectory" value="${esc(value.shrinkBackupDirectory)}" maxlength="2048"><small>Службе приложения нужны права на чтение и удаление файлов в этой папке.</small></div>
           <div class="field full"><label for="sql-shrink-backup-directory">Путь для SQL Server</label><input id="sql-shrink-backup-directory" name="sqlShrinkBackupDirectory" value="${esc(value.sqlShrinkBackupDirectory)}" maxlength="2048"><small>Путь к той же папке со стороны SQL Server. Службе SQL нужны права на чтение и запись.</small></div>
         </div>
+        <hr class="divider"><h3>Временные .bak для копирования Dev-баз</h3>
+        <p class="muted">Если оба поля пусты, используется каталог Shrink-копий.</p>
+        <div class="form-grid">
+          <div class="field full"><label for="copy-backup-directory">Путь для приложения</label><input id="copy-backup-directory" name="copyBackupDirectory" value="${esc(value.copyBackupDirectory)}" maxlength="2048"><small>DevRefresh читает и удаляет временные файлы в этой папке.</small></div>
+          <div class="field full"><label for="sql-copy-backup-directory">Путь для SQL Server</label><input id="sql-copy-backup-directory" name="sqlCopyBackupDirectory" value="${esc(value.sqlCopyBackupDirectory)}" maxlength="2048"><small>Путь к той же папке. SQL Server читает и записывает в неё временные файлы.</small></div>
+        </div>
         <hr class="divider"><label class="checkbox"><input name="trustServerCertificate" type="checkbox" ${value.trustServerCertificate ? "checked" : ""}><span>Доверять сертификату SQL Server без проверки цепочки<small class="muted"> · для серверов с сертификатом, которому инфраструктура пока не доверяет</small></span></label>
         <hr class="divider"><h3>После актуализации</h3>
         <label class="checkbox"><input name="runDbccCheckDb" type="checkbox" ${value.runDbccCheckDb ? "checked" : ""}><span>Проверять целостность SQL-базы (DBCC CHECKDB)<small>Выполняется в конце актуализации. Настройка применяется к новым заданиям.</small></span></label>
@@ -260,6 +266,8 @@ function settingsInput(form) {
     sqlBackupDirectory: form.elements.sqlBackupDirectory.value,
     shrinkBackupDirectory: form.elements.shrinkBackupDirectory.value,
     sqlShrinkBackupDirectory: form.elements.sqlShrinkBackupDirectory.value,
+    copyBackupDirectory: form.elements.copyBackupDirectory.value,
+    sqlCopyBackupDirectory: form.elements.sqlCopyBackupDirectory.value,
     trustServerCertificate: form.elements.trustServerCertificate.checked,
     runDbccCheckDb: form.elements.runDbccCheckDb.checked
   };

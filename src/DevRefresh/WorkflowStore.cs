@@ -249,6 +249,21 @@ public sealed partial class Store
         return (string?)cmd.ExecuteScalar()=="Running";
     }
     public WorkflowJob[] GetCleanupJobs()=>GetJobsInternal("WHERE resource_name IS NOT NULL AND status NOT IN('Queued','Running')",null);
+    internal void RegisterCopyBackup(string id,string filename,SqlSettings settings,string stage)
+    {
+        var job=GetJob(id) ?? throw new InvalidOperationException("Задание копирования не найдено.");
+        using var db=Open();
+        using var cmd=db.CreateCommand();
+        cmd.CommandText="""
+            UPDATE workflow_jobs SET resource_name=$file,request=$request,stage=$stage
+            WHERE id=$id AND status='Running' AND resource_name IS NULL
+            """;
+        cmd.Parameters.AddWithValue("$file",filename);
+        cmd.Parameters.AddWithValue("$request",JsonSerializer.Serialize(job.Request with {Settings=settings}));
+        cmd.Parameters.AddWithValue("$stage",stage);
+        cmd.Parameters.AddWithValue("$id",id);
+        if (cmd.ExecuteNonQuery()!=1) throw new InvalidOperationException("Не удалось зарегистрировать временный .bak.");
+    }
     public void ClearResource(string id)
     {
         using var db=Open();using var cmd=db.CreateCommand();cmd.CommandText="UPDATE workflow_jobs SET resource_name=NULL,pinned_backup=NULL WHERE id=$id";

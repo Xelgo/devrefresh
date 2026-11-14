@@ -1,111 +1,30 @@
-using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
-using Microsoft.SqlServer.Management.Common;
-using Microsoft.SqlServer.Management.Smo;
 using static DevRefresh.RestoreSql;
 
 namespace DevRefresh;
 
-internal sealed class DatabaseCopy(RestoreSql sql)
+internal static class DatabaseCopy
 {
     public static string PreviousName(string id) => "DevRefreshPrevious_" + id;
+    public static string BackupName(string id) => "devrefresh-copy-" + id + ".bak";
 
-    public async Task Transfer(SqlSettings settings, string source, string target, string stage, string id,
-        Action<string> progress, CancellationToken token)
+    public static (string AppDirectory,string SqlDirectory)? BackupDirectories(SqlSettings settings)
     {
-        if (!Guid.TryParseExact(id,"N",out _) || stage!="DevRefreshStage_"+id ||
-            Rules.ParseDatabase(target) is not { } parsed || !WorkflowRules.IsCopySource(source,target,parsed.SourceKey))
-            throw new InputException("Выберите другую Dev-базу того же типа.");
-
-        await using var control = await sql.Open(settings,token:token);
-        if (!await TryRefreshLock(control,source,"Shared",token))
-            throw new InputException("База-источник сейчас обновляется.");
-        var info = (await Query(control,$"""
-            SELECT collation_name,compatibility_level,is_read_committed_snapshot_on,snapshot_isolation_state
-            FROM sys.databases
-            WHERE name={L(source)} AND database_id>4 AND state=0 AND source_database_id IS NULL
-            """,token)).SingleOrDefault();
-        if (info?["collation_name"] is not string collation || !Regex.IsMatch(collation,@"\A[A-Za-z0-9_]+\z"))
-            throw new InputException("База-источник недоступна или SQL Server не сообщил её сортировку.");
-
-        progress("Создание базы для копирования в режиме SIMPLE");
-        await Execute(control,$"CREATE DATABASE {Q(stage)} COLLATE {collation}",token);
-        await Execute(control,$"ALTER DATABASE {Q(stage)} SET RECOVERY SIMPLE",token);
-        await using (var stagingConnection = await sql.Open(settings,stage,token))
-            await RemoveInheritedDuplicateUsers(stagingConnection,source,token);
-
-        progress("Онлайн-копирование структуры и данных базы");
-        using var sourceConnection = new SqlConnection(sql.ConnectionString(settings));
-        using var targetConnection = new SqlConnection(sql.ConnectionString(settings));
-        var sourceSmo = new ServerConnection(sourceConnection) { StatementTimeout=LongCommandTimeoutSeconds };
-        var targetSmo = new ServerConnection(targetConnection) { StatementTimeout=LongCommandTimeoutSeconds };
-        using var cancellation = token.Register(() =>
-        {
-            // SMO exposes synchronous transfer. Cancel both connections to interrupt scripts or bulk copy.
-            sourceConnection.Close();
-            targetConnection.Close();
-        });
-        try
-        {
-            await Task.Run(() =>
-            {
-                var database = new Server(sourceSmo).Databases[source] ??
-                    throw new InputException("База-источник исчезла перед копированием.");
-                var transfer = new Transfer(database)
-                {
-                    CopyAllObjects=true, CopySchema=true, CopyData=true,
-                    DestinationServer=settings.Server, DestinationDatabase=stage,
-                    DestinationServerConnection=targetSmo, DestinationLoginSecure=settings.Authentication=="windows",
-                    UseDestinationTransaction=true, BulkCopyTimeout=LongCommandTimeoutSeconds
-                };
-                transfer.Options.WithDependencies=true;
-                transfer.Options.ContinueScriptingOnError=false;
-                transfer.Options.DriAll=true;
-                transfer.Options.Indexes=true;
-                transfer.Options.Triggers=true;
-                transfer.Options.ExtendedProperties=true;
-                token.ThrowIfCancellationRequested();
-                transfer.TransferData();
-            },token);
-        }
-        catch (Exception) when (token.IsCancellationRequested) { token.ThrowIfCancellationRequested(); throw; }
-        catch (TransferException error)
-        {
-            for (var cause=error.InnerException; cause is not null; cause=cause.InnerException)
-                if (cause is SqlException sqlError)
-                    throw new SqlServiceException(sqlError.Message,sqlError.Number,error);
-            throw;
-        }
-        finally
-        {
-            sourceSmo.Disconnect();
-            targetSmo.Disconnect();
-        }
-
-        var compatibility = Convert.ToInt32(info["compatibility_level"]);
-        var rcsi = Convert.ToBoolean(info["is_read_committed_snapshot_on"]) ? "ON" : "OFF";
-        var snapshot = Convert.ToInt32(info["snapshot_isolation_state"])==1 ? "ON" : "OFF";
-        await Execute(control,$"""
-            ALTER DATABASE {Q(stage)} SET COMPATIBILITY_LEVEL={compatibility};
-            ALTER DATABASE {Q(stage)} SET READ_COMMITTED_SNAPSHOT {rcsi};
-            ALTER DATABASE {Q(stage)} SET ALLOW_SNAPSHOT_ISOLATION {snapshot};
-            """,token);
+        if (!string.IsNullOrWhiteSpace(settings.CopyBackupDirectory) && !string.IsNullOrWhiteSpace(settings.SqlCopyBackupDirectory))
+            return (settings.CopyBackupDirectory,settings.SqlCopyBackupDirectory);
+        if (ShrinkBackups.Configured(settings))
+            return (settings.ShrinkBackupDirectory,settings.SqlShrinkBackupDirectory);
+        return null;
     }
 
-    private static async Task RemoveInheritedDuplicateUsers(SqlConnection stage,string source,CancellationToken token)
+    public static void DeleteBackup(WorkflowJob job)
     {
-        // CREATE DATABASE inherits users from model. Let SMO recreate matching users from the source.
-        var duplicates=await Query(stage,$"""
-            SELECT inherited.name AS UserName
-            FROM sys.database_principals AS inherited
-            JOIN {Q(source)}.sys.database_principals AS original
-              ON original.name COLLATE DATABASE_DEFAULT = inherited.name
-            WHERE inherited.principal_id > 4 AND original.principal_id > 4
-              AND inherited.type IN ('S','U','G') AND original.type IN ('S','U','G')
-            """,token);
-        foreach (var duplicate in duplicates)
-            await Execute(stage,$"DROP USER {Q((string)duplicate["UserName"]!)}",token);
+        if (!Guid.TryParseExact(job.Id,"N",out _) || job.ResourceName!=BackupName(job.Id) ||
+            BackupDirectories(job.Request.Settings) is not { } paths)
+            throw new InputException("Временный .bak не зарегистрирован для этого задания.");
+        File.Delete(Path.Combine(paths.AppDirectory,job.ResourceName));
     }
+
 
     public static async Task<bool> TryRefreshLock(SqlConnection connection,string database,string mode,CancellationToken token)
     {
@@ -115,20 +34,6 @@ internal sealed class DatabaseCopy(RestoreSql sql)
             EXEC @r=sys.sp_getapplock @Resource={resource},@LockMode={L(mode)},@LockOwner='Session',@LockTimeout=0;
             SELECT @r;
             """,token)>=0;
-    }
-
-    public static async Task Publish(SqlConnection connection,string target,string stage,string previous,bool disconnect,
-        Action register,CancellationToken token)
-    {
-        if (await Scalar<int>(connection,$"SELECT COUNT(*) FROM sys.databases WHERE name={L(previous)}",token)!=0)
-            throw new InputException("Служебное имя предыдущей базы уже занято.");
-        register();
-        var access = disconnect ? "WITH ROLLBACK IMMEDIATE" : "WITH NO_WAIT";
-        await Execute(connection,$"ALTER DATABASE {Q(stage)} SET SINGLE_USER WITH ROLLBACK IMMEDIATE",token);
-        await Execute(connection,$"ALTER DATABASE {Q(target)} SET SINGLE_USER {access}",token);
-        await Execute(connection,$"ALTER DATABASE {Q(target)} MODIFY NAME={Q(previous)}",token);
-        await Execute(connection,$"ALTER DATABASE {Q(stage)} MODIFY NAME={Q(target)}",token);
-        await Execute(connection,$"ALTER DATABASE {Q(target)} SET MULTI_USER WITH NO_WAIT",token);
     }
 
     public static Task FinishPublish(SqlConnection connection,string target,string stage,string previous,CancellationToken token) =>

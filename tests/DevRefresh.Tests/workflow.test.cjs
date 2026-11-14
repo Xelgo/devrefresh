@@ -71,14 +71,13 @@ test('refresh defaults to Shrink when available and displays both archive dates'
     querySelector:()=>({}),getAttribute:()=>null};
   const dialog={innerHTML:'',classList:{add(){}},showModal(){},querySelector:()=>form};
   ctx.document.querySelector=()=>dialog;
-  const options={backupName:'bp_22-11-2026.bak',backupDate:'2026-11-22',activeSessions:0,
+  const options={backupName:'bp_22-11-2026.bak',backupDate:'2026-11-22',backupSize:4*1024**3,activeSessions:0,copyBackupConfigured:true,
     shrinkBackup:{size:2.5*1024**3,dataDate:'2026-11-21'},copySources:[{name:'bp_dev_source'}]};
   ctx.api=async()=>options;
 
   await vm.runInContext('openRefreshDialog({name:"bp_dev_owner"})',ctx);
-  assert.match(dialog.innerHTML,/<option value="shrink" selected>Архив из папки \(shrink\) · 2,5 ГБ/);
-  assert.match(dialog.innerHTML,/21\.11\.2026/);
-  assert.match(dialog.innerHTML,/22\.11\.2026/);
+  assert.match(dialog.innerHTML,/<option value="shrink" selected>Shrink-копия \/ 21\.11\.2026 \/ 2,5 ГБ/);
+  assert.match(dialog.innerHTML,/<option value="archive"\s*>Full-копия \/ 22\.11\.2026 \/ 4 ГБ/);
   assert.match(dialog.innerHTML,/Другая Dev-база/);
   assert.doesNotMatch(dialog.innerHTML,/name="shrink"/);
 
@@ -87,7 +86,39 @@ test('refresh defaults to Shrink when available and displays both archive dates'
   options.backupModifiedAt='2026-11-22T10:00:00Z';
   form.elements.sourceMode.value='archive';
   await vm.runInContext('openRefreshDialog({name:"bp_dev_owner"})',ctx);
-  assert.match(dialog.innerHTML,/<option value="archive" selected>Архив из папки \(полный\)/);
-  assert.match(dialog.innerHTML,/Копии пока нет/);
-  assert.match(dialog.innerHTML,/Файл изменён 2026-11-22/);
+  assert.match(dialog.innerHTML,/<option value="archive" selected>Full-копия \/ файл изменён 2026-11-22/);
+  assert.match(dialog.innerHTML,/Shrink-копия \/ недоступна/);
+});
+
+test('only the second dialog can submit the replacement and approve ending target connections',async()=>{
+  const {ctx,events}=fixture([]);
+  ctx.state.page='databases';
+  ctx.HTMLFormElement=class {
+    id='refresh-form';
+    elements={sourceMode:{value:'database'},runNow:{checked:true},sourceDatabase:{value:'bp_dev_source'}};
+    getAttribute(){return null;}
+    matches(){return false;}
+    reportValidity(){return true;}
+    querySelector(){return {disabled:false};}
+  };
+  let close, requests=[];
+  const target={}, confirmation={querySelector:()=>target,showModal(){},addEventListener(name,fn){close=fn;}};
+  ctx.document.querySelector=selector=>selector==='#refresh-confirmation'?confirmation:{close(){}};
+  ctx.api=async (url,options)=>{requests.push([url,JSON.parse(options.body)]);return {id:'job'};};
+  ctx.busy=async (_,work)=>work();
+  ctx.toast=ctx.rememberDashboardJob=()=>{};
+  vm.runInContext('flow.refresh={row:{name:"bp_dev_owner"}}',ctx);
+  const submit=()=>events.submit({target:new ctx.HTMLFormElement(),preventDefault(){}});
+  const cancelled=submit();
+  assert.match(target.textContent,/bp_dev_owner/);
+  assert.equal(requests.length,0);
+  close();
+  await cancelled;
+  assert.equal(requests.length,0);
+  const accepted=submit();
+  confirmation.returnValue='confirm';
+  close();
+  await accepted;
+  assert.deepEqual(requests,[['/api/refresh',{database:'bp_dev_owner',shrink:false,pii:false,
+    sourceDatabase:'bp_dev_source',confirmReplace:true,confirmDisconnect:true,scheduledAt:null}]]);
 });

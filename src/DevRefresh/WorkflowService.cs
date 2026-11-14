@@ -227,6 +227,12 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
             if(token.IsCancellationRequested)return;
             try
             {
+                if (job.Request.SourceDatabase is not null && job.ResourceName==DatabaseCopy.BackupName(job.Id))
+                {
+                    DatabaseCopy.DeleteBackup(job);
+                    store.ClearResource(job.Id);
+                    continue;
+                }
                 if(job.Request.SourceDatabase is not null && job.Target is not null && job.PinnedBackup==DatabaseCopy.PreviousName(job.Id))
                 {
                     using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -240,7 +246,7 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
                 await CleanupStage(job);
                 logger.LogInformation("Removed completed service database {Resource}",job.ResourceName);
             }
-            catch(Exception ex){logger.LogWarning(ex,"Service database cleanup pending for job {JobId}",job.Id);}
+            catch(Exception ex){logger.LogWarning(ex,"Resource cleanup pending for job {JobId}",job.Id);}
         }
     }
 
@@ -347,35 +353,41 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
                 }
             }
         }
-        if(job.Kind!="refresh" || job.Target is null || Rules.ParseDatabase(job.Target)?.SourceKey!=job.SourceKey)
+        return await RestoreDeveloperDatabase(job,source.SqlPath,settings,ready,timing,Progress,token);
+    }
+
+    private async Task<RunResult> RestoreDeveloperDatabase(WorkflowJob job,string backupPath,SqlSettings settings,
+        ShrinkBackup? ready,WorkflowRunTiming timing,Action<string> progress,CancellationToken token)
+    {
+        if(job.Kind!="refresh" || job.Target is not { } target || Rules.ParseDatabase(target)?.SourceKey!=job.SourceKey)
             throw new InputException("Некорректная база назначения.");
-        Progress("Проверка базы назначения и соединений");
+        progress("Проверка базы назначения и соединений");
         await using var owner=await sql.Open(settings,token:token);
-        if(!await DatabaseCopy.TryRefreshLock(owner,job.Target,"Exclusive",token))
+        if(!await DatabaseCopy.TryRefreshLock(owner,target,"Exclusive",token))
             throw new InputException("База уже обновляется или используется как источник копирования.");
-        if(await RestoreSql.Scalar<int>(owner,$"SELECT COUNT(*) FROM sys.databases WHERE name={RestoreSql.L(job.Target)} AND database_id>4",token)!=1)
+        if(await RestoreSql.Scalar<int>(owner,$"SELECT COUNT(*) FROM sys.databases WHERE name={RestoreSql.L(target)} AND database_id>4 AND source_database_id IS NULL",token)!=1)
             throw new InputException("База назначения не существует.");
-        if(await sql.Sessions(settings,job.Target,token)>0&&!job.Request.ConfirmDisconnect)
+        if(!job.Request.ConfirmDisconnect && await sql.Sessions(settings,target,token)>0)
             throw new InputException("В базе есть соединения. Подтвердите их завершение.");
         var touched=false;
         var opened=false;
         Exception? failure=null;
         try
         {
-            touched=true;
-            var backupFileSize=await sql.Restore(settings,job.Target,source.SqlPath,job.Id,true,token,owner,job.Request.ConfirmDisconnect,Progress);
+            var backupFileSize=await sql.Restore(settings,target,backupPath,job.Id,true,token,owner,
+                job.Request.ConfirmDisconnect,progress,replacing:()=>touched=true);
             timing.FileSizes.Add(backupFileSize);
-            await using (var restored=await sql.Open(settings,job.Target,token))
+            await using (var restored=await sql.Open(settings,target,token))
             {
-                await CaptureDeveloperSize(restored,job.Target,"После восстановления",timing,Progress,token);
-                await CheckDeveloperCopy(restored,job.Target,settings,Progress,token);
+                await CaptureDeveloperSize(restored,target,"После восстановления",timing,progress,token);
+                await CheckDeveloperCopy(restored,target,settings,progress,token);
             }
-            Progress("Возврат базы в многопользовательский режим");
-            await OpenDeveloperAccess(owner,job.Target,job.Request.ConfirmDisconnect,token);
+            progress("Возврат базы в многопользовательский режим");
+            await OpenDeveloperAccess(owner,target,job.Request.ConfirmDisconnect,token);
             opened=true;
-            source.Dispose();
-            var result=new {Database=job.Target,Backup=job.Request.BackupName,Shrink=job.Request.UsePreparedShrink,
-                ShrinkDataDate=ready?.DataDate,PersonalDataProcessed=false,RestoreMode=job.Request.UsePreparedShrink?"prepared-shrink":"direct",
+            var result=new {Database=target,Backup=job.Request.BackupName,job.Request.SourceDatabase,Shrink=job.Request.UsePreparedShrink,
+                ShrinkDataDate=ready?.DataDate,PersonalDataProcessed=false,
+                RestoreMode=job.Request.SourceDatabase is not null?"copy":job.Request.UsePreparedShrink?"prepared-shrink":"direct",
                 SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0};
             store.MarkDatabaseReady(job.Id,result);
             return new(result,job.Request.UsePreparedShrink?null:job.Request);
@@ -389,8 +401,8 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
                 try
                 {
                     const string cleanup = "Возврат базы в многопользовательский режим";
-                    if(failure is null)Progress(cleanup); else timing.ChangeStage(cleanup);
-                    await OpenDeveloperAccess(owner,job.Target,job.Request.ConfirmDisconnect,timeout.Token);
+                    if(failure is null)progress(cleanup); else timing.ChangeStage(cleanup);
+                    await OpenDeveloperAccess(owner,target,job.Request.ConfirmDisconnect,timeout.Token);
                 }
                 catch(Exception ex)
                 {
@@ -544,63 +556,59 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
         Action<string> progress,CancellationToken token)
     {
         if(job.Kind!="refresh" || job.Target is not { } target || Rules.ParseDatabase(target)?.SourceKey!=job.SourceKey ||
-            !WorkflowRules.IsCopySource(source,target,job.SourceKey))
+            !WorkflowRules.IsCopySource(source,target,job.SourceKey) || !Guid.TryParseExact(job.Id,"N",out _))
             throw new InputException("Выберите другую Dev-базу того же типа.");
-        var settings=job.Request.Settings;
-        progress("Проверка базы назначения и соединений");
-        await using var owner=await sql.Open(settings,token:token);
-        if(!await DatabaseCopy.TryRefreshLock(owner,target,"Exclusive",token))
-            throw new InputException("База уже обновляется или используется как источник копирования.");
-        if(await RestoreSql.Scalar<int>(owner,$"SELECT COUNT(*) FROM sys.databases WHERE name={RestoreSql.L(target)} AND database_id>4 AND source_database_id IS NULL",token)!=1)
-            throw new InputException("База назначения не существует.");
-        if(!job.Request.ConfirmDisconnect && await sql.Sessions(settings,target,token)>0)
-            throw new InputException("В базе назначения есть соединения. Подтвердите их завершение.");
 
-        var stage="DevRefreshStage_"+job.Id;
-        var previous=DatabaseCopy.PreviousName(job.Id);
-        if(await RestoreSql.Scalar<int>(owner,$"SELECT COUNT(*) FROM sys.databases WHERE name={RestoreSql.L(stage)}",token)!=0)
-            throw new InputException("Служебное имя копии уже занято.");
-        store.UpdateJob(job.Id,"Running","Подготовка базы для копирования",resource:stage);
-        var publishing=false;
-        var opened=false;
-        Exception? failure=null;
+        var current=store.GetSettings() ?? throw new InputException("Не настроено подключение.");
+        if (!string.Equals(current.Server,job.Request.Settings.Server,StringComparison.OrdinalIgnoreCase))
+            throw new InputException("SQL Server изменился после постановки задания. Запустите актуализацию заново.");
+        if (DatabaseCopy.BackupDirectories(current) is not { } paths || !Directory.Exists(paths.AppDirectory))
+            throw new InputException("Укажите доступную папку временных .bak или настройте каталог Shrink-копий.");
+        var filename=DatabaseCopy.BackupName(job.Id);
+        var appPath=Path.Combine(paths.AppDirectory,filename);
+        var sqlPath=Path.Combine(paths.SqlDirectory,filename);
+        progress("Проверка базы-источника");
+
         try
         {
-            await new DatabaseCopy(sql).Transfer(settings,source,target,stage,job.Id,progress,token);
-            await using (var copied=await sql.Open(settings,stage,token))
+            await using (var connection=await sql.Open(current,token:token))
             {
-                await CaptureDeveloperSize(copied,stage,"После копирования",timing,progress,token);
-                await CheckDeveloperCopy(copied,stage,settings,progress,token);
+                if (!await DatabaseCopy.TryRefreshLock(connection,source,"Shared",token))
+                    throw new InputException("База-источник сейчас обновляется.");
+                if (await RestoreSql.Scalar<int>(connection,$"""
+                    SELECT COUNT(*) FROM sys.databases
+                    WHERE name={RestoreSql.L(source)} AND database_id>4 AND state=0 AND source_database_id IS NULL
+                    """,token)!=1)
+                    throw new InputException("База-источник недоступна.");
+                if (File.Exists(appPath))
+                    throw new InputException("Временный .bak для этого задания уже существует.");
+
+                const string backupStage="Создание временного .bak";
+                store.RegisterCopyBackup(job.Id,filename,current,backupStage);
+                job=job with {Request=job.Request with {Settings=current},ResourceName=filename};
+                progress(backupStage);
+                await RestoreSql.Execute(connection,
+                    $"BACKUP DATABASE {RestoreSql.Q(source)} TO DISK={RestoreSql.L(sqlPath)} WITH COPY_ONLY,COMPRESSION,CHECKSUM,INIT",token);
             }
-            progress("Замена базы назначения подготовленной копией");
-            await DatabaseCopy.Publish(owner,target,stage,previous,job.Request.ConfirmDisconnect,() =>
-            {
-                store.UpdateJob(job.Id,"Running","Замена базы назначения подготовленной копией",pinned:previous);
-                publishing=true;
-            },token);
-            var result=new {Database=target,SourceDatabase=source,Shrink=false,PersonalDataProcessed=false,
-                RestoreMode="copy",SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0};
-            store.MarkDatabaseReady(job.Id,result);
-            opened=true;
-            return new(result,job.Request);
+
+            // Check that DevRefresh can access the temporary file before changing the destination.
+            using var backup=sql.OpenBackupSource(current with {BackupDirectory=paths.AppDirectory,SqlBackupDirectory=paths.SqlDirectory},
+                filename,token);
+            return await RestoreDeveloperDatabase(job,backup.SqlPath,current,null,timing,progress,token);
         }
-        catch(Exception error){failure=error;throw;}
         finally
         {
-            try
+            if (job.ResourceName==filename)
             {
-                if(failure is null)progress("Удаление служебных баз копирования");
-                if(publishing)
+                try
                 {
-                    using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                    await DatabaseCopy.FinishPublish(owner,target,stage,previous,timeout.Token);
+                    DatabaseCopy.DeleteBackup(job);
+                    store.ClearResource(job.Id);
                 }
-                await CleanupStage(store.GetJob(job.Id)!);
-            }
-            catch(Exception error)
-            {
-                logger.LogWarning(error,"Copy cleanup pending for job {JobId}",job.Id);
-                if(failure is null && !opened)throw;
+                catch(Exception error)
+                {
+                    logger.LogWarning(error,"Temporary backup cleanup pending for job {JobId}",job.Id);
+                }
             }
         }
     }

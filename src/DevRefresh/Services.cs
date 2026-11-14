@@ -62,9 +62,14 @@ public sealed class SettingsService(Store store, IDataProtectionProvider protect
         var shrinkPath = input.ShrinkBackupDirectory?.Trim() ?? previous?.ShrinkBackupDirectory ?? "";
         var sqlShrinkPath = input.SqlShrinkBackupDirectory?.Trim() ?? previous?.SqlShrinkBackupDirectory ?? "";
         ShrinkBackups.ValidatePaths(shrinkPath, sqlShrinkPath, input.BackupDirectory.Trim(), input.SqlBackupDirectory.Trim());
+        var copyPath = input.CopyBackupDirectory?.Trim() ?? previous?.CopyBackupDirectory ?? "";
+        var sqlCopyPath = input.SqlCopyBackupDirectory?.Trim() ?? previous?.SqlCopyBackupDirectory ?? "";
+        if ((copyPath.Length != 0 || sqlCopyPath.Length != 0) &&
+            new[] {copyPath,sqlCopyPath}.Any(path => path.Length > 2048 || !Path.IsPathFullyQualified(path) || path.Any(char.IsControl)))
+            throw new InputException("Укажите оба абсолютных пути к папке временных .bak.");
         return new(input.Server.Trim(), input.Authentication, input.Authentication == "sql" ? input.Username.Trim() : "",
             password, input.BackupDirectory.Trim(), input.SqlBackupDirectory.Trim(), input.TrustServerCertificate,
-            input.RunDbccCheckDb ?? previous?.RunDbccCheckDb ?? true, shrinkPath, sqlShrinkPath);
+            input.RunDbccCheckDb ?? previous?.RunDbccCheckDb ?? true, shrinkPath, sqlShrinkPath, copyPath, sqlCopyPath);
     }
 
     public string ConnectionString(SqlSettings value)

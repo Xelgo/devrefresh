@@ -8,11 +8,13 @@ public sealed record AppUser(string Name, string Kind, bool IsAdmin, string? Own
 public sealed record SqlSettings(string Server, string Authentication, string Username,
     string ProtectedPassword, string BackupDirectory, string SqlBackupDirectory,
     bool TrustServerCertificate, bool RunDbccCheckDb = true,
-    string ShrinkBackupDirectory = "", string SqlShrinkBackupDirectory = "");
+    string ShrinkBackupDirectory = "", string SqlShrinkBackupDirectory = "",
+    string CopyBackupDirectory = "", string SqlCopyBackupDirectory = "");
 public sealed record SettingsInput(string Server, string Authentication, string Username,
     string? Password, string BackupDirectory, string SqlBackupDirectory,
     bool TrustServerCertificate, bool? RunDbccCheckDb = null,
-    string? ShrinkBackupDirectory = null, string? SqlShrinkBackupDirectory = null);
+    string? ShrinkBackupDirectory = null, string? SqlShrinkBackupDirectory = null,
+    string? CopyBackupDirectory = null, string? SqlCopyBackupDirectory = null);
 public sealed record SetupInput(string Username, string Password, string[]? WindowsAdmins);
 public sealed record LoginInput(string Username, string Password);
 public sealed record SecurityInput(string[]? WindowsAdmins, string? NewPassword,
@@ -117,6 +119,8 @@ public static partial class Rules
         trustServerCertificate = settings?.TrustServerCertificate ?? false,
         runDbccCheckDb = settings?.RunDbccCheckDb ?? true,
         shrinkBackupDirectory = settings?.ShrinkBackupDirectory ?? "",
-        sqlShrinkBackupDirectory = settings?.SqlShrinkBackupDirectory ?? ""
+        sqlShrinkBackupDirectory = settings?.SqlShrinkBackupDirectory ?? "",
+        copyBackupDirectory = settings?.CopyBackupDirectory ?? "",
+        sqlCopyBackupDirectory = settings?.SqlCopyBackupDirectory ?? ""
     };
 }

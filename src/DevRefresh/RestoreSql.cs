@@ -50,7 +50,7 @@ public sealed class RestoreSql(SettingsService settings)
     }
     public async Task<WorkflowFileSize> Restore(SqlSettings value,string database,string backup,string id,bool replace,CancellationToken token,
         SqlConnection? connection=null,bool disconnect=false,Action<string>? progress=null,
-        Action<DateTime>? backupFinished=null)
+        Action<DateTime>? backupFinished=null,Action? replacing=null)
     {
         if(replace ? Rules.ParseDatabase(database) is null : database!="DevRefreshStage_"+id)
             throw new InputException("Имя базы не допускает восстановление.");
@@ -87,6 +87,7 @@ public sealed class RestoreSql(SettingsService settings)
         var restore=$"RESTORE DATABASE {Q(database)} FROM DISK={L(backup)} WITH {string.Join(",",moves)},RECOVERY,RESTRICTED_USER{(replace?",REPLACE":"")}{checksum}";
         if(replace)restore=$"ALTER DATABASE {Q(database)} SET SINGLE_USER"+(disconnect?" WITH ROLLBACK IMMEDIATE":" WITH NO_WAIT")+"; "+restore;
         progress?.Invoke(replace ? "Восстановление бэкапа непосредственно в базу разработчика" : "Восстановление временной базы для анализа");
+        if (replace) replacing?.Invoke();
         await Execute(cn,restore,token);
         if (replace)
         {
