@@ -1,26 +1,60 @@
 # DevRefresh
 
-Windows service for restoring 1C development databases from SQL Server backups. It also offers scheduled refreshes, backup analysis, and optional trimmed copies.
+DevRefresh — служба Windows с веб-интерфейсом для актуализации баз разработки 1С на Microsoft SQL Server. Разработчик выбирает базу и источник, подтверждает замену данных и получает обновлённую базу в своём контуре. Доступ к SQL Server и каталогам резервных копий настраивает администратор. Разработчику достаточно доступа к DevRefresh.
 
-Download the Windows x64 installation and update packages from [GitHub Releases](https://github.com/Xelgo/devrefresh/releases). See the [deployment guide](deploy/portable/README.md) for setup and recovery instructions.
+Сервис помогает быстро подготовить окружение для разработки, тестирования и воспроизведения ошибок на свежих данных. Разработчик запускает обновление самостоятельно или планирует его заранее. Если для задачи достаточно части данных, можно взять заранее подготовленную Shrink-копию и сэкономить место на диске.
 
-For the first upgrade to 0.2.39, use the existing offline update process. For subsequent releases, run `UPDATE-ONLINE.cmd` as a Windows administrator from the installation directory and confirm the update. The ZIP is verified before the service stops. To check the available version, run `UPDATE-ONLINE.cmd -CheckOnly`.
+## Как это работает
 
-Shrink builds can rewrite eligible tables in the temporary database when they have at least 250,000 rows and the reduction will remove at least 70%. The service copies the rows to keep, truncates the original table, restores the saved rows, and drops the working table in the same transaction. This uses temporary space in the staging database. Set `"Shrink": { "RewriteTables": false }` in `config/server.json` and restart the service to use the original delete strategy for all tables. The optional `RewriteMinDeletePercent` setting accepts a threshold from 51 to 100.
+```mermaid
+flowchart TD
+    full["Полная резервная копия .bak"] --> choose{"Выбор источника и подтверждение замены"}
+    full --> shrink["Сборка Shrink во временной базе по профилю"]
+    shrink --> ready["Готовая Shrink-копия .bak"] --> choose
+    source["Другая Dev-база того же типа"] --> choose
+    choose -->|Full или Shrink| verify["Проверка бэкапа"]
+    choose -->|Другая Dev-база| temp["Временный бэкап COPY_ONLY"] --> verify
+    verify --> restore["Восстановление в целевую Dev-базу"]
+    restore --> done["База готова к работе"]
+```
 
-Shrink builds commit ordinary deletes in batches of up to 50,000 rows and commit each table rewrite separately. If a build fails, DevRefresh cleans up the staging database. A new build starts with a restored full backup, and the previous published Shrink remains available until a replacement passes verification.
+1. Администратор подключает Dev SQL Server, указывает каталоги резервных копий и настраивает доступ сотрудников. Сервис сопоставляет базы с владельцами по именам. При необходимости администратор связывает тип Dev-базы с другим именем бэкапа.
+2. Разработчик выбирает доступную базу и один из трёх источников. Для архивов интерфейс показывает дату и размер файла. Готовая Shrink-копия выбирается по умолчанию. При её отсутствии сервис предлагает полную копию.
+3. Разработчик подтверждает замену содержимого и запускает задание сразу или на выбранную дату и время. При восстановлении DevRefresh завершает открытые соединения с целевой базой. Текущий этап и результат видны в веб-интерфейсе, подробности сохраняются в журнале.
 
-`BinaryData` uses the same rewrite settings. The fast path requires at least 250,000 blocks to delete and the configured removal share to be met both by block count and by payload bytes. It uses the same unreferenced key list as batched deletion. The staging database needs room for a copy of the surviving blocks.
+| Источник | Что получает разработчик |
+| --- | --- |
+| **Полная копия (Full)** | Базу из полного `.bak`. Сервис подбирает свежий файл для нужного типа базы. |
+| **Shrink-копия** | Базу из заранее подготовленного `.bak`, сокращённого по профилю администратора. Дата данных берётся из полной копии, на основе которой собран архив. |
+| **Другая Dev-база** | Копию доступной на том же SQL Server базы того же типа. SQL Server создаёт временный бэкап `COPY_ONLY`. База-источник остаётся доступной, а временный файл удаляется после восстановления. |
 
-Build in Windows PowerShell with the .NET 10 SDK.
+## Как готовится Shrink-копия
 
-    .\scripts\Build-Portable.ps1 -Kind Both
+Администратор анализирует полный бэкап, выбирает таблицы и даты отсечения в профиле сокращения и запускает сборку вручную или по расписанию. DevRefresh восстанавливает полный бэкап во временную базу, применяет профиль и сохраняет результат в отдельный `.bak`. Новая копия становится доступна после проверки, до этого разработчики могут пользоваться предыдущей.
 
-When publishing a stable GitHub release tagged `vMAJOR.MINOR.PATCH`, attach the generated update ZIP under the name `DevRefresh-update-win-x64.zip`. The tag, package version, and executable version must match. Publish only the built packages and keep operational data on the instance.
+<details>
+<summary>Как DevRefresh сокращает большие таблицы</summary>
 
-Run the .NET and JavaScript tests with:
+При сборке обычные удаления фиксируются пакетами до 50 000 строк. Для подходящих таблиц с 250 000 строками и более при удалении от 70% строк сервис может временно сохранить оставшиеся строки, очистить таблицу и вернуть в неё сохранённые данные. Каждая такая операция фиксируется отдельно и требует места во временной базе. Для `BinaryData` этот способ применяется при удалении от 250 000 блоков, если порог достигнут и по числу блоков, и по объёму их содержимого. Порог `RewriteMinDeletePercent` можно задать в диапазоне от 51 до 100 в разделе `Shrink` файла `config/server.json`. Чтобы отключить этот способ, задайте `RewriteTables` значение `false` в том же разделе и перезапустите службу.
 
-    dotnet test tests\DevRefresh.Tests\DevRefresh.Tests.csproj
-    node --test
+</details>
 
-On a Windows machine with SQL Server Express LocalDB, set `DEVREFRESH_TEST_LOCALDB=1` before running the .NET tests to verify the Shrink rewrite against SQL Server.
+## Установка и обновление
+
+Скачайте пакет для **Windows x64** на странице [GitHub Releases](https://github.com/Xelgo/devrefresh/releases/latest). Установка службы и настройка каталогов описаны в [руководстве по развёртыванию](deploy/portable/README.md).
+
+Для обновления запустите `UPDATE-ONLINE.cmd` от имени администратора Windows в каталоге установки. Команда `UPDATE-ONLINE.cmd -CheckOnly` покажет доступную версию. При переходе с версии ниже 0.2.39 сначала выполните обновление из локального архива по руководству.
+
+## Сборка и тесты
+
+Сборка выполняется в Windows PowerShell с .NET 10 SDK. Для запуска тестов интерфейса нужен Node.js.
+
+```powershell
+.\scripts\Build-Portable.ps1 -Kind Both
+dotnet test tests\DevRefresh.Tests\DevRefresh.Tests.csproj
+node --test
+```
+
+Для интеграционных тестов сокращения установите SQL Server Express LocalDB и задайте `$env:DEVREFRESH_TEST_LOCALDB = '1'` перед запуском `dotnet test`.
+
+Стабильный релиз публикуется с тегом `vMAJOR.MINOR.PATCH`. Для онлайн-обновления приложите архив под именем `DevRefresh-update-win-x64.zip`. Версии тега, пакета и исполняемого файла должны совпадать. Публикуются только сборки. Рабочие данные хранятся в установленном экземпляре.
