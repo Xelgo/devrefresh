@@ -4,14 +4,17 @@ namespace DevRefresh;
 
 public sealed partial class Store
 {
-    public ShrinkSchedule[] GetShrinkSchedules()
+    public ShrinkSchedule[] GetShrinkSchedules() => GetShrinkScheduleStates().Select(state => state.Schedule).ToArray();
+
+    internal (ShrinkSchedule Schedule, string? LastSlot)[] GetShrinkScheduleStates()
     {
         using var db = Open();
         using var command = db.CreateCommand();
-        command.CommandText = "SELECT value FROM shrink_schedules ORDER BY source_key";
+        command.CommandText = "SELECT value,last_slot FROM shrink_schedules ORDER BY source_key";
         using var reader = command.ExecuteReader();
-        var schedules = new List<ShrinkSchedule>();
-        while (reader.Read()) schedules.Add(JsonSerializer.Deserialize<ShrinkSchedule>(reader.GetString(0))!);
+        var schedules = new List<(ShrinkSchedule, string?)>();
+        while (reader.Read())
+            schedules.Add((JsonSerializer.Deserialize<ShrinkSchedule>(reader.GetString(0))!, reader.IsDBNull(1) ? null : reader.GetString(1)));
         return [.. schedules];
     }
 

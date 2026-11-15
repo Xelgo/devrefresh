@@ -16,7 +16,8 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
     private readonly object dispatchGate=new();
     private bool pausedForUpdate;
     private const string PrepareBackgroundMaintenance="Подготовка фонового освобождения места";
-    private sealed record RunResult(object Value,WorkflowRequest? MaintenanceRequest=null);
+    private sealed record RunResult(object Value,WorkflowRequest? MaintenanceRequest=null,string? CompletionStage=null);
+    private const string ShrinkAlreadyCurrent = "Сборка пропущена: доступная Shrink-копия уже актуальна";
     public void Enqueue(WorkflowJob job)
     {
         if (job.Status=="Queued") SignalQueue();
@@ -123,13 +124,13 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
                 store.QueueBackgroundMaintenance(id,request,timing.Finish());
                 return;
             }
-            var complete = job.Kind switch
+            var complete = result.CompletionStage ?? (job.Kind switch
             {
                 "refresh" => "База восстановлена",
                 "preview" => "План проверен",
                 "shrink-build" => "Shrink-копия опубликована",
                 _ => "Анализ завершён"
-            };
+            });
             store.UpdateJob(id,"Succeeded",complete,result.Value,
                 executionReport:timing.Finish());
             store.Audit(job.Actor,job.Kind+".completed",$"Задание {id}, база {job.Target??"анализ"}: завершено.");
@@ -179,14 +180,29 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
         var settings = store.GetSettings();
         if (settings is null || !ShrinkBackups.Configured(settings)) return;
         var aliases = store.GetBackupAliases();
-        foreach (var schedule in store.GetShrinkSchedules())
+        BackupFile[]? backups = null;
+        foreach (var (schedule, lastSlot) in store.GetShrinkScheduleStates())
         {
             if (schedule.DueSlot(now, TimeZoneInfo.Local) is not { } slot) continue;
+            var slotKey = slot.ToString("O");
+            if (string.CompareOrdinal(slotKey, lastSlot) <= 0) continue;
             var profile = store.GetProfile(schedule.SourceKey);
             var source = aliases.GetValueOrDefault(schedule.SourceKey, schedule.SourceKey);
             if (profile is null || !WorkflowRules.ProfileMatchesBackup(profile, source)) continue;
+
+            backups ??= BackupCatalog.Scan(settings.BackupDirectory).Files;
+            var full = backups.FirstOrDefault(backup => backup.SourceKey == source);
+            var ready = ShrinkBackups.Available(store, settings, schedule.SourceKey);
+            if (full?.BackupDate is { } fullDate && ready is not null && fullDate <= ready.DataDate)
+            {
+                if (store.TrySkipShrinkBuild(schedule, slotKey))
+                    logger.LogInformation("Skipped scheduled Shrink build for {SourceKey} at {Slot}. Full backup date {FullDate}, Shrink data date {DataDate}",
+                        schedule.SourceKey, slot, fullDate, ready.DataDate);
+                continue;
+            }
+
             var job = store.TryQueueShrinkBuild(schedule,
-                new(settings, "", profile, profile.Rules, true, false, BuildSlot:slot.ToString("O")));
+                new(settings, "", profile, profile.Rules, true, false, BuildSlot:slotKey));
             if (job is not null) Enqueue(job);
         }
     }
@@ -279,7 +295,7 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
         }
         var settings=job.Request.Settings;
         if (job.Kind=="shrink-build")
-            return new(await BuildShrinkBackup(job,timing,Progress,LiveProgress,token));
+            return await BuildShrinkBackup(job,timing,Progress,LiveProgress,token);
         if(job.Request.SourceDatabase is { } sourceDatabase)
             return await RunCopy(job,sourceDatabase,timing,Progress,token);
         ShrinkBackup? ready=null;
@@ -487,7 +503,7 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
         store.Audit(job.Actor,"refresh.completed",$"Задание {id}, база {database}: завершено.");
     }
 
-    private async Task<object> BuildShrinkBackup(WorkflowJob job, WorkflowRunTiming timing,
+    private async Task<RunResult> BuildShrinkBackup(WorkflowJob job, WorkflowRunTiming timing,
         Action<string> progress, Action<string> liveProgress, CancellationToken token)
     {
         var settings=job.Request.Settings;
@@ -495,14 +511,29 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
         var backupType=WorkflowRules.ParseBackupName(profile.BackupName)?.SourceKey
             ?? throw new InputException("Не определён тип исходного бэкапа.");
         var full=BackupCatalog.RequireLatest(settings.BackupDirectory,backupType);
-        if (store.GetShrinkBackup(job.SourceKey) is { } current && current.Matches(settings) &&
-            File.Exists(current.PathInDirectory) && full.BackupDate is { } fullDate && fullDate < current.Backup.DataDate)
+        var current=ShrinkBackups.Available(store,settings,job.SourceKey);
+        var fullDate=full.BackupDate;
+        if (job.Request.BuildSlot is null && fullDate < current?.DataDate)
             throw new InputException("Самый свежий доступный полный бэкап старее опубликованной Shrink-копии.");
         if (!Directory.Exists(settings.ShrinkBackupDirectory))
             throw new InputException("Папка Shrink-копий недоступна службе DevRefresh. Проверьте путь и права.");
         var stage="DevRefreshStage_"+job.Id;
         DateTime? backupFinish=null;
         using var source=sql.OpenBackupSource(settings,full.Name,token);
+        if (job.Request.BuildSlot is not null && current is not null)
+        {
+            if (fullDate is null)
+            {
+                progress("Чтение даты полного бэкапа");
+                await using var connection=await sql.Open(settings,token:token);
+                var header=await RestoreSql.ReadFullBackupHeader(connection,source.SqlPath,token);
+                fullDate=header.GetValueOrDefault("BackupFinishDate") is DateTime finished
+                    ? DateOnly.FromDateTime(finished) : DateOnly.FromDateTime(full.ModifiedAt.LocalDateTime);
+            }
+            if (fullDate <= current.DataDate)
+                return new(new { Skipped=true, FullBackupName=full.Name, FullDataDate=fullDate, ShrinkDataDate=current.DataDate },
+                    CompletionStage:ShrinkAlreadyCurrent);
+        }
         store.UpdateJob(job.Id,"Running","Подготовка временной базы",resource:stage);
         StoredShrinkBackup published;
         Exception? failure=null;
@@ -518,7 +549,7 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
             await using (var staging=await sql.Open(settings,stage,token))
                 await RestoreSql.Execute(staging,"EXEC sys.sp_dropextendedproperty @name=N'DevRefresh.Resource'",token);
 
-            var dataDate=full.BackupDate ?? DateOnly.FromDateTime(backupFinish ?? full.ModifiedAt.LocalDateTime);
+            var dataDate=fullDate ?? DateOnly.FromDateTime(backupFinish ?? full.ModifiedAt.LocalDateTime);
             var item=new StoredShrinkBackup(new(job.Id,job.SourceKey,ShrinkBackups.FileName(job.SourceKey,job.Id),
                 full.Name,dataDate,DateTimeOffset.UtcNow,0),settings.ShrinkBackupDirectory,settings.SqlShrinkBackupDirectory,settings.Server);
             if (File.Exists(item.PathInDirectory)) throw new InputException("Файл для новой Shrink-копии уже существует.");
@@ -550,7 +581,7 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
         token.ThrowIfCancellationRequested();
         progress("Публикация Shrink-копии");
         lock (shrinkFiles) store.PublishShrinkBackup(published);
-        return new {ShrinkBackup=published.Backup,timing.BinaryDataCleanup};
+        return new(new {ShrinkBackup=published.Backup,timing.BinaryDataCleanup});
     }
 
     private async Task<RunResult> RunCopy(WorkflowJob job,string source,WorkflowRunTiming timing,

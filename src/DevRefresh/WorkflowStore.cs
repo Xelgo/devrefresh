@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace DevRefresh;
 
@@ -67,6 +68,29 @@ public sealed partial class Store
     internal WorkflowJob? TryQueueShrinkBuild(ShrinkSchedule schedule, WorkflowRequest request)
         => CreateJobCore("shrink-build", schedule.SavedBy, schedule.SourceKey, null, request, null, schedule);
 
+    internal bool TrySkipShrinkBuild(ShrinkSchedule schedule, string slot)
+    {
+        using var db = Open();
+        using var cmd = db.CreateCommand();
+        return TryAdvanceShrinkSlot(cmd, schedule, slot);
+    }
+
+    private static bool TryAdvanceShrinkSlot(SqliteCommand cmd, ShrinkSchedule schedule, string slot)
+    {
+        cmd.CommandText = """
+            UPDATE shrink_schedules SET last_slot=$slot
+            WHERE source_key=$source AND value=$schedule AND (last_slot IS NULL OR last_slot<$slot)
+              AND NOT EXISTS (SELECT 1 FROM workflow_jobs WHERE kind='shrink-build' AND source_key=$source
+                  AND status IN ('Queued','Running'))
+            """;
+        cmd.Parameters.AddWithValue("$slot", slot);
+        cmd.Parameters.AddWithValue("$source", schedule.SourceKey);
+        cmd.Parameters.AddWithValue("$schedule", JsonSerializer.Serialize(schedule));
+        var advanced = cmd.ExecuteNonQuery() == 1;
+        cmd.Parameters.Clear();
+        return advanced;
+    }
+
     private WorkflowJob? CreateJobCore(string kind,string actor,string source,string? target,WorkflowRequest request,
         DateTimeOffset? scheduledAt,ShrinkSchedule? schedule)
     {
@@ -77,17 +101,7 @@ public sealed partial class Store
         using var db=Open();using var tx=db.BeginTransaction(deferred:false);using var cmd=db.CreateCommand();cmd.Transaction=tx;
         if (schedule is not null)
         {
-            cmd.CommandText = """
-                UPDATE shrink_schedules SET last_slot=$slot
-                WHERE source_key=$source AND value=$schedule AND (last_slot IS NULL OR last_slot<$slot)
-                  AND NOT EXISTS (SELECT 1 FROM workflow_jobs WHERE kind='shrink-build' AND source_key=$source
-                      AND status IN ('Queued','Running'))
-                """;
-            cmd.Parameters.AddWithValue("$slot",request.BuildSlot!);
-            cmd.Parameters.AddWithValue("$source",source);
-            cmd.Parameters.AddWithValue("$schedule",JsonSerializer.Serialize(schedule));
-            if (cmd.ExecuteNonQuery() == 0) return null;
-            cmd.Parameters.Clear();
+            if (!TryAdvanceShrinkSlot(cmd, schedule, request.BuildSlot!)) return null;
         }
         else if (kind=="shrink-build")
         {

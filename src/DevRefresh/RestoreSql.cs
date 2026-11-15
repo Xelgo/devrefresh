@@ -49,6 +49,16 @@ public sealed class RestoreSql(SettingsService settings)
         var sqlPath=Path.Combine(value.SqlBackupDirectory,filename);
         return new(sqlPath,File.Open(path,FileMode.Open,FileAccess.Read,FileShare.Read));
     }
+
+    internal static async Task<Dictionary<string, object?>> ReadFullBackupHeader(SqlConnection connection,
+        string path, CancellationToken token)
+    {
+        var header = await Query(connection, $"RESTORE HEADERONLY FROM DISK={L(path)}", token);
+        if (header.Count != 1 || Convert.ToInt32(header[0]["BackupType"]) != 1 || Convert.ToBoolean(header[0]["IsDamaged"]))
+            throw new InputException("Нужен один полный неповреждённый резервный набор базы SQL Server.");
+        return header[0];
+    }
+
     public async Task<WorkflowFileSize> Restore(SqlSettings value,string database,string backup,string id,bool replace,CancellationToken token,
         SqlConnection? connection=null,bool disconnect=false,Action<string>? progress=null,
         Action<DateTime>? backupFinished=null,Action? replacing=null)
@@ -58,11 +68,9 @@ public sealed class RestoreSql(SettingsService settings)
         await using var ownedConnection=connection is null?await Open(value,token:token):null;
         var cn=connection??ownedConnection!;
         progress?.Invoke("Чтение заголовка резервной копии");
-        var header=await Query(cn,$"RESTORE HEADERONLY FROM DISK={L(backup)}",token);
-        if(header.Count!=1 || Convert.ToInt32(header[0]["BackupType"])!=1 || Convert.ToBoolean(header[0]["IsDamaged"]))
-            throw new InputException("Нужен один полный неповреждённый резервный набор базы SQL Server.");
-        if (header[0].GetValueOrDefault("BackupFinishDate") is DateTime finished) backupFinished?.Invoke(finished);
-        var checksum=Convert.ToBoolean(header[0]["HasBackupChecksums"])?",CHECKSUM":"";
+        var header=await ReadFullBackupHeader(cn,backup,token);
+        if (header.GetValueOrDefault("BackupFinishDate") is DateTime finished) backupFinished?.Invoke(finished);
+        var checksum=Convert.ToBoolean(header["HasBackupChecksums"])?",CHECKSUM":"";
         progress?.Invoke("Проверка резервной копии SQL Server (RESTORE VERIFYONLY)");
         await Execute(cn,$"RESTORE VERIFYONLY FROM DISK={L(backup)}"+(checksum.Length>0?" WITH CHECKSUM":""),token);
         progress?.Invoke("Подготовка файлов восстановления");

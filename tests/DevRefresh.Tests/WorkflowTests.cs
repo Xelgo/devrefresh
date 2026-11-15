@@ -129,6 +129,71 @@ public sealed class WorkflowTests
         Assert.Empty(store.GetShrinkSchedules());
     }
 
+    [Theory]
+    [InlineData("bp_gm_14-11-2026.bak", true, false)]
+    [InlineData("bp_gm_13-11-2026.bak", true, false)]
+    [InlineData("bp_gm_15-11-2026.bak", true, true)]
+    [InlineData("bp_gm_14-11-2026.bak", false, true)]
+    public async Task ShrinkScheduleSkipsWhenAnAvailableCopyAlreadyCoversTheFullBackupDate(
+        string fullName, bool shrinkFileExists, bool expectJob)
+    {
+        using var app = new Factory();
+        const string server = "TEST-SQL";
+        var directory = Path.Combine(app.DirectoryPath, "trimmed");
+        Directory.CreateDirectory(directory);
+        var settings = new SqlSettings(server, "windows", "", "", app.DirectoryPath, app.DirectoryPath, false,
+            ShrinkBackupDirectory: directory, SqlShrinkBackupDirectory: directory);
+        var fullPath = Path.Combine(app.DirectoryPath, fullName);
+        await File.WriteAllTextAsync(fullPath, "Full fixture");
+        using var lockedFull = File.Open(fullPath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var dbPath = Path.Combine(app.DirectoryPath, "devrefresh.sqlite");
+        var store = new Store(dbPath);
+        var profile = new ReductionProfile("bp_gm", "analysis", fullName, "revision", [],
+            DateTimeOffset.UtcNow.ToString("O"), "admin");
+        store.SaveSettings(settings, "admin");
+        store.SaveProfile(profile);
+        var published = store.CreateJob("shrink-build", "admin", "bp_gm", null,
+            new(settings, "", profile, profile.Rules, true, false));
+        var shrinkName = $"shrink-bp_gm-{published.Id}.bak";
+        if (shrinkFileExists)
+            await File.WriteAllTextAsync(Path.Combine(directory, shrinkName), "Shrink fixture");
+        store.UpdateJob(published.Id, "Succeeded", "Опубликовано");
+        var backup = new ShrinkBackup(published.Id, "bp_gm", shrinkName, "bp_gm_14-11-2026.bak",
+            new DateOnly(2026, 11, 14), DateTimeOffset.UtcNow, 1);
+
+        using (var db = DatabaseMigrator.Connect(dbPath))
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = "INSERT INTO shrink_backups(job_id,source_key,value,state) VALUES($id,'bp_gm',$value,'current')";
+            cmd.Parameters.AddWithValue("$id", published.Id);
+            cmd.Parameters.AddWithValue("$value", JsonSerializer.Serialize(new { Backup = backup, Directory = directory, SqlDirectory = directory, Server = server }));
+            cmd.ExecuteNonQuery();
+        }
+
+        var previousDay = DateTime.Today.AddDays(-1);
+        var schedule = new ShrinkSchedule("bp_gm", true, [(int)previousDay.DayOfWeek], "12:00",
+            new DateTimeOffset(previousDay.AddDays(-1)), "admin");
+        store.SaveShrinkSchedule(schedule);
+        var expectedSlot = schedule.DueSlot(DateTimeOffset.UtcNow, TimeZoneInfo.Local)!.Value.ToString("O");
+        using var running = app.WithWebHostBuilder(builder => builder.UseSetting("Workflows:Execute", "true"));
+        using var client = running.CreateClient();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (true)
+        {
+            using var db = DatabaseMigrator.Connect(dbPath);
+            using var cmd = db.CreateCommand();
+            cmd.CommandText = "SELECT last_slot FROM shrink_schedules WHERE source_key='bp_gm'";
+            if (cmd.ExecuteScalar() as string == expectedSlot) break;
+            await Task.Delay(25, timeout.Token);
+        }
+        var jobs = store.GetJobs().Where(job => job.Kind == "shrink-build" && job.Id != published.Id);
+        if (expectJob)
+            Assert.Equal(expectedSlot, Assert.Single(jobs).Request.BuildSlot);
+        else
+            Assert.Empty(jobs);
+    }
+
     [Fact]
     public void BackupSourceAllowsSqlReadersAndBlocksWritersUntilDisposed()
     {
