@@ -4,6 +4,21 @@ public static class WorkflowEndpoints
 {
     public static void MapWorkflow(this WebApplication app)
     {
+        var devAnalyses = app.MapGroup("/api/admin/reduction/dev-analyses");
+        devAnalyses.MapGet("", (DevDatabaseAnalysis analyses, CancellationToken token) => analyses.Catalog(token));
+        devAnalyses.MapPost("", async (DevAnalysisInput input, DevDatabaseAnalysis analyses, CancellationToken token) =>
+        {
+            var report = await analyses.Analyze(input.Database, token);
+            return Results.Created($"/api/admin/reduction/dev-analyses/{report.Id}", report);
+        });
+        devAnalyses.MapGet("/{id:guid}", async (Guid id, DevDatabaseAnalysis analyses, CancellationToken token) =>
+            await analyses.Read<DevAnalysisReport>(id, token) is { } report ? Results.Ok(report) : Results.NotFound());
+        devAnalyses.MapDelete("/{id:guid}", (Guid id, DevDatabaseAnalysis analyses) =>
+        {
+            analyses.Delete(id);
+            return Results.NoContent();
+        });
+
         app.MapGet("/api/admin/reduction/catalog",async(Store store,ISqlGateway sql,CancellationToken token)=>
         {
             var settings=store.GetSettings();if(settings is null)throw new InputException("Сначала настройте SQL Server и каталоги бэкапов.");

@@ -58,14 +58,18 @@ function backupAliasesMarkup(catalog) {
 }
 
 async function loadReduction() {
-  document.querySelector("#content").innerHTML = '<div class="loading">Загружаем типы баз и бэкапы…</div>';
+  if (flow.tab === "dev-analyses") return loadDevAnalyses();
+  document.querySelector("#content").innerHTML = reductionHeader() + '<div class="loading">Загружаем типы баз и бэкапы…</div>';
   try {
     flow.catalog = await api("/api/admin/reduction/catalog");
     const pending = flow.catalog.analyses.find(j => !jobFinished(j));
     if (pending) flow.analysisJob = pending;
-    if (state.page === "reduction") reductionPage();
+    if (state.page === "reduction" && flow.tab !== "dev-analyses") reductionPage();
     if (pending) pollAnalysis(pending.id);
-  } catch (error) { document.querySelector("#content").innerHTML = `<div class="notice error">${esc(error.message)}</div>`; }
+  } catch (error) {
+    if (state.page === "reduction" && flow.tab !== "dev-analyses")
+      document.querySelector("#content").innerHTML = reductionHeader() + `<div class="notice error">${esc(error.message)}</div>`;
+  }
 }
 
 const shrinkWeekdays = [[1, "Пн"], [2, "Вт"], [3, "Ср"], [4, "Чт"], [5, "Пт"], [6, "Сб"], [0, "Вс"]];
@@ -105,15 +109,21 @@ function shrinkSchedulesMarkup(catalog) {
     ${rows || '<div class="empty"><p>Типы Dev-баз пока не найдены.</p></div>'}`;
 }
 
-function reductionPage() {
-  const catalog = flow.catalog;
-  if (!catalog) return;
-  const header = `${heading("Администрирование", "Анализ и сокращение", "")}
+function reductionHeader() {
+  return `${heading("Администрирование", "Анализ и сокращение", "")}
     <nav class="actions reduction-tabs" aria-label="Разделы анализа">
       <button type="button" class="button ${flow.tab === "analysis" ? "primary" : ""}" aria-pressed="${flow.tab === "analysis"}" data-reduction-tab="analysis">Анализ таблиц</button>
       <button type="button" class="button ${flow.tab === "aliases" ? "primary" : ""}" aria-pressed="${flow.tab === "aliases"}" data-reduction-tab="aliases">Соответствия бэкапов</button>
       <button type="button" class="button ${flow.tab === "shrink" ? "primary" : ""}" aria-pressed="${flow.tab === "shrink"}" data-reduction-tab="shrink">Расписание Shrink</button>
+      <button type="button" class="button ${flow.tab === "dev-analyses" ? "primary" : ""}" aria-pressed="${flow.tab === "dev-analyses"}" data-reduction-tab="dev-analyses">Анализ Dev-баз</button>
     </nav>`;
+}
+
+function reductionPage() {
+  if (flow.tab === "dev-analyses") return renderDevAnalyses();
+  const catalog = flow.catalog;
+  if (!catalog) return;
+  const header = reductionHeader();
   const content = document.querySelector("#content");
   if (flow.tab === "shrink") {
     content.innerHTML = header + shrinkSchedulesMarkup(catalog);
@@ -450,7 +460,7 @@ document.addEventListener("click", async event => {
   try {
     if (button.dataset.reductionTab && flow.tab !== button.dataset.reductionTab) {
       flow.tab = button.dataset.reductionTab;
-      if (flow.tab === "aliases") reductionPage(); else await loadReduction();
+      if (flow.tab === "aliases" && flow.catalog) reductionPage(); else await loadReduction();
     }
     if (button.dataset.shrinkRun) {
       const source = button.dataset.shrinkRun;

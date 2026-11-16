@@ -99,6 +99,7 @@ builder.Services.AddSingleton<SettingsService>();
 builder.Services.AddSingleton<ISqlGateway, SqlGateway>();
 builder.Services.AddSingleton<RestoreSql>();
 builder.Services.AddSingleton<StructureAnalyzer>();
+builder.Services.AddSingleton<DevDatabaseAnalysis>();
 builder.Services.AddSingleton<ReductionExecutor>();
 builder.Services.AddSingleton<WorkflowService>();
 builder.Services.AddHostedService(sp=>sp.GetRequiredService<WorkflowService>());

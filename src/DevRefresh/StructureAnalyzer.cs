@@ -10,9 +10,11 @@ namespace DevRefresh;
 public sealed class StructureAnalyzer(RestoreSql sql)
 {
     public async Task<AnalysisData> Analyze(SqlSettings settings,string database,string id,string source,
-        string backupName,CancellationToken token,bool includePeriodStatistics=false)
+        string backupName,CancellationToken token,bool includePeriodStatistics=false,bool liveDatabase=false)
     {
         await using var cn=await sql.Open(settings,database,token);
+        if(liveDatabase)
+            await RestoreSql.Execute(cn,"SET DEADLOCK_PRIORITY LOW; SET LOCK_TIMEOUT 3000;",token);
         var raw=await RestoreSql.Query(cn,"""
 SELECT s.name AS SchemaName,t.name AS TableName,c.name AS ColumnName,ty.name AS SqlType,
  c.max_length AS Length,c.is_nullable AS Nullable,c.is_identity AS IsIdentity,c.is_computed AS Computed
@@ -43,8 +45,14 @@ JOIN sys.dm_db_partition_stats p ON p.object_id=t.object_id
 WHERE t.is_ms_shipped=0 GROUP BY s.name,t.name
 """,token);
         var sizes=statistics.ToDictionary(x=>((string)x["SchemaName"]!,(string)x["TableName"]!));
-        var connectionString=new SqlConnectionStringBuilder(sql.ConnectionString(settings,database))
-            {Pooling=true,MinPoolSize=0,MaxPoolSize=8,ApplicationName="DevRefresh.Metadata"}.ConnectionString;
+        var metadataSettings=new SqlConnectionStringBuilder(sql.ConnectionString(settings,database))
+            {Pooling=true,MinPoolSize=0,MaxPoolSize=8,ApplicationName="DevRefresh.Metadata"};
+        if(liveDatabase)
+        {
+            metadataSettings.ApplicationName="DevRefresh.DevAnalysis";
+            metadataSettings.CommandTimeout=15;
+        }
+        var connectionString=metadataSettings.ConnectionString;
         using var metadataPool=new MetadataPool(connectionString);
         var provider=await Task.Run(()=>MetadataProvider.Create(DataSourceType.SqlServer,in connectionString),token);
         var configuration=provider.GetConfiguration();var warnings=new List<string>();
@@ -54,6 +62,7 @@ WHERE t.is_ms_shipped=0 GROUP BY s.name,t.name
             token.ThrowIfCancellationRequested();
             foreach(var name in provider.GetMetadataNames(kind))
             {
+                if(liveDatabase)token.ThrowIfCancellationRequested();
                 var logical=$"{kind}.{name}";
                 try
                 {
