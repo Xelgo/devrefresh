@@ -11,6 +11,7 @@ public sealed partial class Store
     {
         DatabaseMigrator.Ensure(path);
         connectionString = new SqliteConnectionStringBuilder { DataSource = path, DefaultTimeout = 10, Pooling = false }.ToString();
+        MigrateLegacyRestorePipelines();
     }
 
     private SqliteConnection Open()

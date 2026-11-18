@@ -121,8 +121,6 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             if(job.Kind=="refresh" && job.Target is not null && Rules.ParseDatabase(job.Target) is {IsTestContour:true}
                 && !store.CanRefreshTestContour(job.Actor,configuration))
                 throw new InputException("Доступ к обновлению тестового контура отозван. Задание не выполнено.");
-            if(job.Kind=="refresh" && job.Target is {} target)
-                job=job with{Request=job.Request with{Pipeline=store.GetRestorePipeline(job.Request.Settings.Server,target,RestorePipelineRules.Source(job.Request))}};
             var result=await Run(job,timing,token);
             if (result.MaintenanceRequest is { } request)
             {
@@ -308,7 +306,11 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
         BackupSource OpenSource()
         {
             if (!job.Request.ResolveLatestBackup)
+            {
+                if(job.Kind=="refresh")job=job with{Request=job.Request with{Pipeline=store.GetRestorePipeline(settings.Server,
+                    WorkflowRules.ParseBackupName(job.Request.BackupName)?.SourceKey??job.SourceKey,"bak")}};
                 return sql.OpenBackupSource(settings,job.Request.BackupName,token);
+            }
             var current=store.GetSettings() ?? throw new InputException("Не настроено подключение.");
             if (!string.Equals(current.Server,settings.Server,StringComparison.OrdinalIgnoreCase))
                 throw new InputException("SQL Server изменился после постановки задания. Запустите актуализацию заново.");
@@ -317,14 +319,16 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             {
                 var type=store.GetBackupAliases().GetValueOrDefault(job.SourceKey,job.SourceKey);
                 var full=BackupCatalog.RequireLatest(settings.BackupDirectory,type);
-                job=job with {Request=job.Request with {Settings=settings,BackupName=full.Name}};
+                job=job with {Request=job.Request with {Settings=settings,BackupName=full.Name,
+                    Pipeline=job.Kind=="refresh"?store.GetRestorePipeline(settings.Server,full.SourceKey,"bak"):null}};
                 return sql.OpenBackupSource(settings,full.Name,token);
             }
             lock (shrinkFiles)
             {
                 ready=ShrinkBackups.Available(store,settings,job.SourceKey)
                     ??throw new InputException("Для этого типа пока нет готовой Shrink-копии.");
-                job=job with {Request=job.Request with {Settings=settings,BackupName=ready.Name}};
+                job=job with {Request=job.Request with {Settings=settings,BackupName=ready.Name,
+                    Pipeline=store.GetRestorePipeline(settings.Server,WorkflowRules.ParseBackupName(ready.FullBackupName)?.SourceKey??job.SourceKey,"bak")}};
                 var preparedSettings=settings with
                 {
                     BackupDirectory=settings.ShrinkBackupDirectory, SqlBackupDirectory=settings.SqlShrinkBackupDirectory
@@ -403,7 +407,7 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             await using (var restored=await sql.Open(settings,target,token))
             {
                 await CaptureDeveloperSize(restored,target,"После восстановления",timing,progress,token);
-                operations=await pipelineExecutor.Apply(restored,job.Request.Pipeline,progress,token);
+                operations=await pipelineExecutor.Apply(restored,job.Request.Pipeline,target,progress,token);
                 await CheckDeveloperCopy(restored,target,settings,progress,token);
             }
             progress("Возврат базы в многопользовательский режим");
@@ -625,7 +629,8 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
 
                 const string backupStage="Создание временного .bak";
                 store.RegisterCopyBackup(job.Id,filename,current,backupStage);
-                job=job with {Request=job.Request with {Settings=current},ResourceName=filename};
+                job=job with {Request=job.Request with {Settings=current,
+                    Pipeline=store.GetRestorePipeline(current.Server,store.GetBackupAliases().GetValueOrDefault(job.SourceKey,job.SourceKey),"bak")},ResourceName=filename};
                 progress(backupStage);
                 await DatabaseCopy.CreateBackup(connection,job,source,sqlPath,progress,logger,token);
             }

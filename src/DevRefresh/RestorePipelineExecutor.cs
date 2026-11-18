@@ -20,14 +20,14 @@ public sealed class RestorePipelineExecutor
         return rows;
     }
 
-    public async Task<RestoreOperationResult[]> Apply(SqlConnection connection,RestorePipeline? pipeline,Action<string> progress,CancellationToken token)
+    public async Task<RestoreOperationResult[]> Apply(SqlConnection connection,RestorePipeline? pipeline,string target,Action<string> progress,CancellationToken token)
     {
         if(pipeline is null || pipeline.Operations.Length==0)return [];
-        if(!connection.Database.Equals(pipeline.Database,StringComparison.OrdinalIgnoreCase))
+        if(Rules.ParseDatabase(target) is null || !connection.Database.Equals(target,StringComparison.OrdinalIgnoreCase))
             throw new InputException("Правило операций относится к другой SQL-базе.");
         foreach(var operation in pipeline.Operations)
         {
-            RestorePipelineRules.Validate(pipeline.Database,pipeline.SourceKind,operation.TargetDomain);
+            RestorePipelineRules.Validate(pipeline.SourceType,pipeline.ArchiveFormat,operation.TargetDomain);
             if(operation.Kind!=RestorePipelineRules.WindowsDomain)throw new InputException("Неизвестная операция пайплайна восстановления.");
         }
         var result=new List<RestoreOperationResult>();

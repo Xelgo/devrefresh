@@ -401,7 +401,7 @@ function syncRefreshSource(form) {
   form.querySelector("#refresh-database-source").hidden = !copy;
   form.querySelector("#refresh-publish-notice").textContent = copy
     ? "DevRefresh создаст временный .bak базы-источника, восстановит его в выбранную базу и удалит файл."
-    : dt ? `.dt полностью заменяет информационную базу через IBCMD. Требуется монопольный доступ 1С. ${options.dtBackup ? `Архив: ${options.dtBackup.name}.` : "Свежий архив будет выбран при запуске задания."}`
+    : dt ? `.dt удаляет целевую SQL-базу, затем IBCMD создаёт новую базу из архива. Прежние данные будут утрачены даже при ошибке создания. ${options.dtBackup ? `Архив: ${options.dtBackup.name}.` : "Свежий архив будет выбран при запуске задания."}`
     : shrink ? "В базу назначения заливается готовая копия, подготовленная по профилю администратора."
     : options.backupUnavailableReason || "Бэкап восстанавливается в базу назначения с сохранением записей. DevRefresh переведёт базу в SIMPLE и освободит неиспользуемое место в файлах.";
   const hasSource = copy ? Boolean(source.value) : available[mode.value];
@@ -465,7 +465,7 @@ document.addEventListener("submit", async event => {
         confirmReplace: true, confirmDisconnect: true, scheduledAt };
       if (sourceMode === "dt") request.dt = true;
       const confirmation = document.querySelector("#refresh-confirmation");
-      confirmation.querySelector("#refresh-confirmation-target").textContent = `Я подтверждаю замену содержимого в базе ${request.database}.`;
+      confirmation.querySelector("#refresh-confirmation-target").textContent = request.dt ? `Я подтверждаю удаление SQL-базы ${request.database} и создание новой из .dt. При ошибке прежняя база не восстановится автоматически.` : `Я подтверждаю замену содержимого в базе ${request.database}.`;
       confirmation.returnValue = "cancel";
       confirmation.showModal();
       await new Promise(resolve => confirmation.addEventListener("close", resolve, { once: true }));

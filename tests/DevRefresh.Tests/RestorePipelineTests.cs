@@ -26,8 +26,8 @@ public sealed class RestorePipelineTests
             (new byte[16],@"\\FIRST\same"),(new byte[16],@"\\CORP\SAME")],"CORP",128));
         Assert.Throws<InputException>(()=>RestorePipelineExecutor.Plan([(new byte[16],"user@domain")],"CORP",128));
         Assert.Throws<InputException>(()=>RestorePipelineExecutor.Plan([(new byte[16],@"\\OLD\long_account")],"CORP",10));
-        Assert.Throws<InputException>(()=>RestorePipelineRules.Validate("bp_prod_owner","full","CORP"));
-        Assert.Throws<InputException>(()=>RestorePipelineRules.Validate("bp_dev_owner","full",@"CORP\user"));
+        Assert.Throws<InputException>(()=>RestorePipelineRules.Validate("bp.invalid","bak","CORP"));
+        Assert.Throws<InputException>(()=>RestorePipelineRules.Validate("bp","bak",@"CORP\user"));
     }
 
     static async Task<HttpResponseMessage> Send(HttpClient client,HttpMethod method,string path,object? body=null)
@@ -38,34 +38,36 @@ public sealed class RestorePipelineTests
         return await client.SendAsync(request);
     }
     [Theory]
-    [InlineData("full")]
-    [InlineData("shrink")]
-    [InlineData("dt")]
-    [InlineData("database")]
-    public async Task RulesAreAdminOnlyScopedToExactServerDatabaseAndArchiveAndCanBeDisabled(string source)
+    [InlineData("full","bak")]
+    [InlineData("shrink","bak")]
+    [InlineData("dt","dt")]
+    [InlineData("database","bak")]
+    public async Task RulesAreAdminOnlySharedByTypeAndArchiveFormatAndCanBeDisabled(string source,string format)
     {
         using var app=new Factory();using var admin=app.Client();
         Assert.Equal(HttpStatusCode.OK,(await Send(admin,HttpMethod.Post,"/api/setup",new SetupInput("admin","Synthetic-pipeline-password!",[]))).StatusCode);
         Assert.Equal(HttpStatusCode.OK,(await Send(admin,HttpMethod.Put,"/api/admin/settings",new SettingsInput("TEST-SQL","windows","",null,app.DirectoryPath,app.DirectoryPath,false))).StatusCode);
-        var input=new RestorePipelineInput("bp_dev_owner",source,true,"CORP");
+        var input=new RestorePipelineInput("bp",format,true,"CORP");
         Assert.Equal(HttpStatusCode.OK,(await Send(admin,HttpMethod.Put,"/api/admin/restore-pipelines",input)).StatusCode);
         var store=app.Services.GetRequiredService<Store>();
-        Assert.Equal("CORP",Assert.Single(store.GetRestorePipeline("test-sql","BP_DEV_OWNER",source)!.Operations).TargetDomain);
-        Assert.Null(store.GetRestorePipeline("OTHER-SQL",input.Database,source));
-        Assert.Null(store.GetRestorePipeline("TEST-SQL","bp_dev_someone_else",source));
-        Assert.Null(store.GetRestorePipeline("TEST-SQL",input.Database,"another-source"));
+        Assert.Equal("CORP",Assert.Single(store.GetRestorePipeline("test-sql","BP",format)!.Operations).TargetDomain);
+        Assert.Null(store.GetRestorePipeline("OTHER-SQL",input.SourceType,format));
+        Assert.Null(store.GetRestorePipeline("TEST-SQL","other_bp",format));
+        Assert.Null(store.GetRestorePipeline("TEST-SQL",input.SourceType,format=="bak"?"dt":"bak"));
+        foreach(var database in new[]{"bp_dev_one","bp_dev_another_owner","bp_tk"})
+            Assert.NotNull(store.GetRestorePipeline("TEST-SQL",Rules.ParseDatabase(database)!.SourceKey,format));
         var request=new WorkflowRequest(store.GetSettings()!,"",null,[],false,true);
         request=source switch{"shrink"=>request with{Shrink=true,UsePreparedShrink=true},"dt"=>request with{UseDt=true},
             "database"=>request with{SourceDatabase="bp_dev_source"},_=>request};
-        Assert.Equal(source,RestorePipelineRules.Source(request));
+        Assert.Equal(format,RestorePipelineRules.Source(request));
         using var developer=app.Client();developer.DefaultRequestHeaders.Add("Test-Domain","CORP\\owner");
         Assert.Equal(HttpStatusCode.Forbidden,(await Send(developer,HttpMethod.Put,"/api/admin/restore-pipelines",input)).StatusCode);
         Assert.Equal(HttpStatusCode.OK,(await Send(admin,HttpMethod.Put,"/api/admin/restore-pipelines",input with{RewriteDomain=false})).StatusCode);
-        Assert.Empty(store.GetRestorePipeline("TEST-SQL",input.Database,source)!.Operations);
-        Assert.Equal("CORP",store.GetRestorePipeline("TEST-SQL",input.Database,source)!.TargetDomain);
+        Assert.Empty(store.GetRestorePipeline("TEST-SQL",input.SourceType,format)!.Operations);
+        Assert.Equal("CORP",store.GetRestorePipeline("TEST-SQL",input.SourceType,format)!.TargetDomain);
         var reopened=new Store(Path.Combine(app.DirectoryPath,"devrefresh.sqlite"));
-        Assert.Empty(reopened.GetRestorePipeline("TEST-SQL",input.Database,source)!.Operations);
-        Assert.Equal(HttpStatusCode.OK,(await Send(admin,HttpMethod.Delete,$"/api/admin/restore-pipelines/{input.Database}/{source}?server=TEST-SQL")).StatusCode);
-        Assert.Null(store.GetRestorePipeline("TEST-SQL",input.Database,source));
+        Assert.Empty(reopened.GetRestorePipeline("TEST-SQL",input.SourceType,format)!.Operations);
+        Assert.Equal(HttpStatusCode.OK,(await Send(admin,HttpMethod.Delete,$"/api/admin/restore-pipelines/{input.SourceType}/{format}?server=TEST-SQL")).StatusCode);
+        Assert.Null(store.GetRestorePipeline("TEST-SQL",input.SourceType,format));
     }
 }

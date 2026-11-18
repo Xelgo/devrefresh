@@ -6,7 +6,7 @@ using Microsoft.Data.SqlClient;
 
 namespace DevRefresh;
 
-internal sealed record IbcmdLaunch(ProcessStartInfo Start,string SqlPassword,string InfobasePassword,TimeSpan Timeout);
+internal sealed record IbcmdLaunch(ProcessStartInfo Start,string SqlUsername,string SqlPassword,TimeSpan Timeout);
 
 public sealed class IbcmdRestore(SettingsService settingsService,IDataProtectionProvider protection,IbcmdProcessRunner runner)
 {
@@ -25,7 +25,7 @@ public sealed class IbcmdRestore(SettingsService settingsService,IDataProtection
         return version;
     }
 
-    internal IbcmdLaunch Prepare(SqlSettings settings,string database,string archive,string workingDirectory,bool force,Version version)
+    internal IbcmdLaunch Prepare(SqlSettings settings,string database,string archive,string workingDirectory,Version version)
     {
         if(Rules.ParseDatabase(database) is null)throw new InputException("Некорректная база назначения IBCMD.");
         if(DtRestoreConfiguration.UnavailableReason(settings) is {} reason)throw new InputException(reason);
@@ -45,30 +45,34 @@ public sealed class IbcmdRestore(SettingsService settingsService,IDataProtection
             sqlUser=connection.UserID;sqlPassword=connection.Password;
         }
         if(sqlPassword.Any(char.IsControl))throw new InputException("Пароль SQL Server для IBCMD не должен содержать управляющие символы.");
-        var ibPassword=Unprotect(dt.ProtectedInfobasePassword);
         var start=new ProcessStartInfo(Path.Combine(dt.IbcmdDirectory,"ibcmd.exe"))
             {WorkingDirectory=dt.IbcmdDirectory};
-        foreach(var argument in new[]{"infobase","restore","--dbms=MSSQLServer","--db-server="+settings.Server,
-            "--db-name="+database,"--db-user="+sqlUser,"--request-db-pwd","--data="+workingDirectory})
+        foreach(var argument in new[]{"infobase","create","--dbms=MSSQLServer","--db-server="+settings.Server,
+            "--db-name="+database,"--db-user="+sqlUser,"--request-db-pwd","--data="+workingDirectory,
+            "--create-database","--force","--restore="+archive})
             start.ArgumentList.Add(argument);
-        if(dt.InfobaseUser.Length>0)
+        return new(start,sqlUser,sqlPassword,TimeSpan.FromMinutes(dt.TimeoutMinutes));
+    }
+
+    internal async Task CheckCreatePermission(SqlSettings settings,IbcmdLaunch launch,CancellationToken token)
+    {
+        var builder=new SqlConnectionStringBuilder(settingsService.ConnectionString(settings))
+        {InitialCatalog="master",IntegratedSecurity=false,UserID=launch.SqlUsername,Password=launch.SqlPassword,
+            Pooling=false,ConnectTimeout=15,ApplicationName="DevRefresh IBCMD preflight"};
+        await using var connection=new SqlConnection(builder.ConnectionString);
+        try
         {
-            start.ArgumentList.Add("--user="+dt.InfobaseUser);
-            start.ArgumentList.Add("--password="+ibPassword);
+            await connection.OpenAsync(token);
+            if(await RestoreSql.Scalar<int>(connection,"SELECT CASE WHEN HAS_PERMS_BY_NAME(NULL,NULL,'CREATE ANY DATABASE')=1 OR IS_SRVROLEMEMBER('dbcreator')=1 OR IS_SRVROLEMEMBER('sysadmin')=1 THEN 1 ELSE 0 END",token)!=1)
+                throw new InputException("SQL-пользователь IBCMD не имеет права создавать базы. Целевая база не удалена.");
         }
-        if(force)
-        {
-            start.ArgumentList.Add("--force");
-            if(version>=new Version(8,3,27,0))start.ArgumentList.Add("--session-terminate-message=Обновление базы через DevRefresh");
-        }
-        start.ArgumentList.Add(archive);
-        return new(start,sqlPassword,ibPassword,TimeSpan.FromMinutes(dt.TimeoutMinutes));
+        catch(SqlException){throw new InputException("Не удалось проверить SQL-вход IBCMD и права создания базы. Целевая база не удалена.");}
     }
 
     internal async Task Execute(IbcmdLaunch launch,CancellationToken token)
     {
         var result=await runner.Run(launch.Start,launch.SqlPassword,launch.Timeout,
-            [launch.SqlPassword,launch.InfobasePassword],token);
+            [launch.SqlPassword],token);
         if(result.ExitCode!=0)
             throw new InputException($"IBCMD завершил загрузку .dt с кодом {result.ExitCode}. Проверьте учётные данные, версию платформы и монопольный доступ 1С. "+
                 result.Output);

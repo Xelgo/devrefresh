@@ -80,7 +80,7 @@ public static class ServiceKeyPreparation
         if(!string.IsNullOrEmpty(settings.ProtectedPassword))
             _=provider.CreateProtector("DevRefresh.SqlPassword.v1").Unprotect(settings.ProtectedPassword);
         if(settings.DtRestore is {} dt)
-            foreach(var password in new[]{dt.ProtectedInfobasePassword,dt.ProtectedSqlPassword}.Where(x=>x.Length>0))
+            foreach(var password in new[]{dt.ProtectedSqlPassword}.Where(x=>x.Length>0))
                 _=provider.CreateProtector(DtRestoreConfiguration.PasswordPurpose).Unprotect(password);
     }
 }

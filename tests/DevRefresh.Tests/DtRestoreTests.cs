@@ -14,7 +14,7 @@ namespace DevRefresh.Tests;
 public sealed class DtRestoreTests
 {
     const string SqlPassword="SQL-synthetic-DT-password!";
-    const string IbPassword="1C-synthetic-DT-password!";
+    const string DtSqlPassword="1C-synthetic-DT-password!";
 
     static async Task<HttpResponseMessage> Send(HttpClient client,HttpMethod method,string path,object body)
     {
@@ -24,7 +24,7 @@ public sealed class DtRestoreTests
         return await client.SendAsync(request);
     }
     static DtRestoreInput Dt(Factory app) => new(true,Path.Combine(app.DirectoryPath,"dt"),
-        Path.Combine(app.DirectoryPath,"bin"),"","IB-admin",IbPassword);
+        Path.Combine(app.DirectoryPath,"bin"),"",SqlUsername:"dt_service",SqlPassword:DtSqlPassword);
     static SettingsInput Settings(Factory app,DtRestoreInput dt) => new("TEST-SQL","sql","sql_service",SqlPassword,
         Path.Combine(app.DirectoryPath,"bak"),Path.Combine(app.DirectoryPath,"bak"),false,DtRestore:dt);
     static async Task<HttpClient> Prepare(Factory app)
@@ -76,18 +76,15 @@ public sealed class DtRestoreTests
         var service=app.Services.GetRequiredService<SettingsService>();
         var store=app.Services.GetRequiredService<Store>();
         var previous=store.GetSettings()!;
-        Assert.NotEqual(IbPassword,previous.DtRestore!.ProtectedInfobasePassword);
-        var input=Settings(app,Dt(app) with{InfobasePassword=null}) with{Password=null};
+        Assert.NotEqual(DtSqlPassword,previous.DtRestore!.ProtectedSqlPassword);
+        var input=Settings(app,Dt(app) with{SqlPassword=null}) with{Password=null};
         Assert.Equal(HttpStatusCode.OK,(await Send(client,HttpMethod.Put,"/api/admin/settings",input)).StatusCode);
-        Assert.Equal(previous.DtRestore.ProtectedInfobasePassword,store.GetSettings()!.DtRestore!.ProtectedInfobasePassword);
+        Assert.Equal(previous.DtRestore.ProtectedSqlPassword,store.GetSettings()!.DtRestore!.ProtectedSqlPassword);
         var response=await client.GetStringAsync("/api/admin/settings");
-        Assert.DoesNotContain(IbPassword,response);Assert.DoesNotContain(SqlPassword,response);
-        Assert.DoesNotContain(previous.DtRestore.ProtectedInfobasePassword,response);
+        Assert.DoesNotContain(DtSqlPassword,response);Assert.DoesNotContain(SqlPassword,response);
+        Assert.DoesNotContain(previous.DtRestore.ProtectedSqlPassword,response);
         // Older settings clients omitting the entire DT object preserve it.
         Assert.Equal(previous.DtRestore,service.Prepare(input with{DtRestore=null}).DtRestore);
-        var cleared=service.Prepare(input with{DtRestore=input.DtRestore! with{ClearInfobasePassword=true}});
-        Assert.Empty(cleared.DtRestore!.ProtectedInfobasePassword);
-        Assert.Empty(service.Prepare(input with{DtRestore=input.DtRestore! with{InfobaseUser="different"}}).DtRestore!.ProtectedInfobasePassword);
     }
 
     [Fact]
@@ -99,21 +96,19 @@ public sealed class DtRestoreTests
         var settings=service.Prepare(input);
         var runner=app.Services.GetRequiredService<IbcmdRestore>();
         var archive=Path.Combine(app.DirectoryPath,"dt","bp_18-11-2026.dt");
-        var launch=runner.Prepare(settings,"bp_gm_dev_demo_owner",archive,Path.Combine(app.DirectoryPath,"work's folder"),true,new(8,3,27,2214));
+        var launch=runner.Prepare(settings,"bp_gm_dev_demo_owner",archive,Path.Combine(app.DirectoryPath,"work's folder"),new(8,3,27,2214));
         Assert.Equal("DT sql ' & password!",launch.SqlPassword);
         Assert.Contains("--db-user=dt_sql",launch.Start.ArgumentList);
         Assert.Contains("--db-name=bp_gm_dev_demo_owner",launch.Start.ArgumentList);
         Assert.Contains("--request-db-pwd",launch.Start.ArgumentList);
         Assert.DoesNotContain(launch.Start.ArgumentList,x=>x.Contains(launch.SqlPassword));
-        Assert.Contains("--password="+IbPassword,launch.Start.ArgumentList);
         Assert.Contains("--force",launch.Start.ArgumentList);
-        Assert.Contains(launch.Start.ArgumentList,x=>x.StartsWith("--session-terminate-message="));
-        Assert.Equal(archive,launch.Start.ArgumentList.Last());
-        var old=runner.Prepare(settings,"bp_gm_dev_demo_owner",archive,"C:\\work",true,new(8,3,25,0));
-        Assert.DoesNotContain(old.Start.ArgumentList,x=>x.StartsWith("--session-terminate-message="));
-        Assert.DoesNotContain(runner.Prepare(settings,"bp_gm_dev_demo_owner",archive,"C:\\work",false,new(8,3,27,0)).Start.ArgumentList,x=>x=="--force");
-        var fallback=runner.Prepare(app.Services.GetRequiredService<Store>().GetSettings()!,"bp_gm_dev_demo_owner",archive,"C:\\work",false,new(8,3,27,0));
-        Assert.Equal(SqlPassword,fallback.SqlPassword);
+        Assert.Equal("--restore="+archive,launch.Start.ArgumentList.Last());
+        Assert.Equal("create",launch.Start.ArgumentList[1]);
+        Assert.DoesNotContain(launch.Start.ArgumentList,x=>x.StartsWith("--user=") || x.StartsWith("--password="));
+        var fallback=runner.Prepare(app.Services.GetRequiredService<Store>().GetSettings()!,"bp_gm_dev_demo_owner",archive,"C:\\work",new(8,3,27,0));
+        Assert.Equal(DtSqlPassword,fallback.SqlPassword);
+        Assert.DoesNotContain("Infobase",await client.GetStringAsync("/api/admin/settings"),StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -128,7 +123,7 @@ public sealed class DtRestoreTests
         Assert.Equal(HttpStatusCode.Accepted,accepted.StatusCode);
         var publicJob=(await accepted.Content.ReadFromJsonAsync<JsonObject>())!;
         Assert.True(publicJob["useDt"]!.GetValue<bool>());
-        Assert.DoesNotContain(IbPassword,publicJob.ToJsonString());
+        Assert.DoesNotContain(DtSqlPassword,publicJob.ToJsonString());
         var job=app.Services.GetRequiredService<Store>().GetJob(publicJob["id"]!.GetValue<string>())!;
         Assert.True(job.Request.UseDt);Assert.True(job.Request.ResolveLatestBackup);Assert.Empty(job.Request.BackupName);
         File.Delete(Path.Combine(app.DirectoryPath,"dt","bp_gm.dt"));
@@ -177,9 +172,9 @@ public sealed class DtRestoreTests
     public async Task ProcessDrainsBothStreamsPassesStdinRedactsSecretsAndReportsExitCode()
     {
         var runner=new IbcmdProcessRunner();
-        var start=PowerShell("$p=[Console]::ReadLine(); for($i=0;$i -lt 1200;$i++){[Console]::Error.WriteLine('diagnostic line '+$i)}; [Console]::WriteLine($p); [Console]::Error.WriteLine('"+IbPassword+"'); exit 9");
-        var result=await runner.Run(start,SqlPassword,TimeSpan.FromSeconds(15),[SqlPassword,IbPassword],CancellationToken.None);
-        Assert.Equal(9,result.ExitCode);Assert.DoesNotContain(SqlPassword,result.Output);Assert.DoesNotContain(IbPassword,result.Output);
+        var start=PowerShell("$p=[Console]::ReadLine(); for($i=0;$i -lt 1200;$i++){[Console]::Error.WriteLine('diagnostic line '+$i)}; [Console]::WriteLine($p); [Console]::Error.WriteLine('"+DtSqlPassword+"'); exit 9");
+        var result=await runner.Run(start,SqlPassword,TimeSpan.FromSeconds(15),[SqlPassword,DtSqlPassword],CancellationToken.None);
+        Assert.Equal(9,result.ExitCode);Assert.DoesNotContain(SqlPassword,result.Output);Assert.DoesNotContain(DtSqlPassword,result.Output);
         Assert.Contains("[скрыто]",result.Output);Assert.True(result.Output.Length<17000);
     }
 

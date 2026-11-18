@@ -13,18 +13,19 @@ public sealed partial class WorkflowService
         progress("Подбор архива .dt");
         var type=store.GetBackupAliases().GetValueOrDefault(job.SourceKey,job.SourceKey);
         var backup=DtRestoreConfiguration.RequireLatest(settings,type);
-        var dt=settings.DtRestore!;
-        var archive=Path.Combine(dt.BackupDirectory,backup.Name);
+        job=job with{Request=job.Request with{Pipeline=store.GetRestorePipeline(settings.Server,backup.SourceKey,"dt")}};
+        var dt=settings.DtRestore!;var archive=Path.Combine(dt.BackupDirectory,backup.Name);
         var info=new FileInfo(archive);
         if(!info.Exists || info.Length==0 || (info.Attributes&FileAttributes.ReparsePoint)!=0)
             throw new InputException("Архив .dt недоступен, пуст или является ссылкой.");
         using var source=File.Open(archive,FileMode.Open,FileAccess.Read,FileShare.Read);
-        progress("Проверка IBCMD и параметров загрузки");
+        progress("Проверка IBCMD и прав создания SQL-базы");
         var version=await ibcmd.Probe(settings,token);
         var root=dt.WorkingDirectory.Length>0?dt.WorkingDirectory:Path.Combine(dataPath,"ibcmd");
         var work=Path.Combine(root,"dt-"+job.Id);
         if(Directory.Exists(work))throw new InputException("Рабочий каталог этого задания IBCMD уже существует. Создайте новое задание.");
-        var launch=ibcmd.Prepare(settings,target,archive,work,job.Request.ConfirmDisconnect,version);
+        var launch=ibcmd.Prepare(settings,target,archive,work,version);
+        await ibcmd.CheckCreatePermission(settings,launch,token);
         Directory.CreateDirectory(work);
         progress("Проверка базы назначения и соединений");
         await using var owner=await sql.Open(settings,token:token);
@@ -34,35 +35,45 @@ public sealed partial class WorkflowService
             throw new InputException("База назначения не существует, недоступна или является снимком.");
         if(!job.Request.ConfirmDisconnect && await sql.Sessions(settings,target,token)>0)
             throw new InputException("В базе есть соединения. Подтвердите их завершение.");
-        var touched=false;var opened=false;
-        RestoreOperationResult[] operations=[];
+        var touched=false;var dropped=false;
         try
         {
-            progress("Загрузка .dt через IBCMD");
+            progress("Удаление целевой SQL-базы перед созданием из .dt");
             touched=true;
+            await RestoreSql.Execute(owner,$"ALTER DATABASE {RestoreSql.Q(target)} SET SINGLE_USER"+
+                (job.Request.ConfirmDisconnect?" WITH ROLLBACK IMMEDIATE":" WITH NO_WAIT")+
+                $"; DROP DATABASE {RestoreSql.Q(target)};",token);
+            dropped=true;
+            progress("Создание базы из .dt через IBCMD");
             await ibcmd.Execute(launch,token);
-            progress("Возврат базы в многопользовательский режим");
             await OpenDeveloperAccess(owner,target,job.Request.ConfirmDisconnect,token);
-            opened=true;
+            RestoreOperationResult[] operations;
             await using(var restored=await sql.Open(settings,target,token))
             {
-                await CaptureDeveloperSize(restored,target,"После загрузки .dt",timing,progress,token);
-                operations=await pipelineExecutor.Apply(restored,job.Request.Pipeline,progress,token);
+                await CaptureDeveloperSize(restored,target,"После создания из .dt",timing,progress,token);
+                operations=await pipelineExecutor.Apply(restored,job.Request.Pipeline,target,progress,token);
                 await CheckDeveloperCopy(restored,target,settings,progress,token);
             }
             var result=new {Database=target,Backup=backup.Name,RestoreMode="dt",DtDataDate=backup.BackupDate,
                 IbcmdVersion=version.ToString(),Shrink=false,PersonalDataProcessed=false,
                 SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0,PostRestoreOperations=operations};
-            store.MarkDatabaseReady(job.Id,result);
-            return new(result);
+            store.MarkDatabaseReady(job.Id,result);return new(result);
+        }
+        catch(InputException error) when(dropped)
+        {
+            throw new InputException("Прежняя SQL-база удалена. Создание или обработка новой базы не завершены: "+error.Message);
         }
         finally
         {
-            if(touched && !opened)
+            if(touched)
             {
                 using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                try { await OpenDeveloperAccess(owner,target,job.Request.ConfirmDisconnect,timeout.Token); }
-                catch(Exception error){logger.LogError(error,"Cannot return {Database} to MULTI_USER after DT job {JobId}",target,job.Id);}
+                try
+                {
+                    if(await RestoreSql.Scalar<int>(owner,$"SELECT COUNT(*) FROM sys.databases WHERE name={RestoreSql.L(target)} AND state=0",timeout.Token)==1)
+                        await OpenDeveloperAccess(owner,target,job.Request.ConfirmDisconnect,timeout.Token);
+                }
+                catch(Exception error){logger.LogWarning(error,"Cannot reopen target after DT create job {JobId}",job.Id);}
             }
         }
     }

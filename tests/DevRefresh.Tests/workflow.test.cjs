@@ -172,13 +172,16 @@ test('DT submission retains the replacement confirmation and sends an explicit s
     querySelector(){return {disabled:false};}
   };
   let close,request;
-  const confirmation={querySelector:()=>({}),showModal(){},addEventListener(name,fn){close=fn;}};
+  const confirmationText={};
+  const confirmation={querySelector:()=>confirmationText,showModal(){},addEventListener(name,fn){close=fn;}};
   ctx.document.querySelector=s=>s==='#refresh-confirmation'?confirmation:{close(){}};
   ctx.api=async(url,options)=>{request=JSON.parse(options.body);return {id:'dt-job'};};
   ctx.busy=async(_,work)=>work();ctx.toast=ctx.rememberDashboardJob=()=>{};
   vm.runInContext('flow.refresh={row:{name:"bp_dev_owner"}}',ctx);
   const pending=events.submit({target:new ctx.HTMLFormElement(),preventDefault(){}});
   assert.equal(request,undefined);
+  assert.match(confirmationText.textContent,/удаление SQL-базы bp_dev_owner/);
+  assert.match(confirmationText.textContent,/При ошибке прежняя база не восстановится/);
   confirmation.returnValue='confirm';close();await pending;
   assert.equal(request.dt,true);assert.equal(request.shrink,false);assert.equal(request.sourceDatabase,null);
   assert.equal(request.confirmReplace,true);assert.equal(request.confirmDisconnect,true);

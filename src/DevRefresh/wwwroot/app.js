@@ -140,18 +140,18 @@ async function loadDatabases() {
   if (state.page === "databases") databasePage();
 }
 
-const restoreSourceLabels = {full:"Full (.bak)",shrink:"Shrink (.bak)",dt:".dt / IBCMD",database:"Другая Dev-база"};
+const restoreFormatLabels = {bak:".bak (Full / Shrink)",dt:".dt / IBCMD"};
 function restorePipelinesMarkup(settings) {
   const pipelines = settings.restorePipelines ?? [];
-  return `<section class="card"><div class="card-header"><div><h2>Операции после восстановления</h2><p>Правило для конкретной SQL-базы и конкретного источника. Выполняется до отметки «База готова».</p></div></div>
+  return `<section class="card"><div class="card-header"><div><h2>Операции после восстановления</h2><p>Общее правило для вида базы и формата архива. Применяется ко всем базам разработчиков и _tk этого вида.</p></div></div>
     <div class="card-body"><form id="restore-pipeline-form"><div class="form-grid">
-      <div class="field full"><label for="pipeline-database">Точное имя SQL-базы</label><input id="pipeline-database" name="database" placeholder="bp_dev_demo_owner" maxlength="128" required><small>Правило привязывается к настроенному SQL Server: ${esc(settings.connection.server || "сначала сохраните подключение")}.</small></div>
-      <div class="field full"><label for="pipeline-source">Источник восстановления</label><select id="pipeline-source" name="sourceKind">${Object.entries(restoreSourceLabels).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></div>
+      <div class="field full"><label for="pipeline-source-type">Вид базы / тип архива</label><input id="pipeline-source-type" name="sourceType" placeholder="bp_gm" maxlength="64" required><small>Тип из имени архива без даты и расширения: bp_gm для bp_gm_18-11-2026.bak или bp_gm.dt. Если настроено соответствие имён, укажите тип файла бэкапа.</small></div>
+      <div class="field full"><label for="pipeline-format">Формат архива</label><select id="pipeline-format" name="archiveFormat">${Object.entries(restoreFormatLabels).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></div>
       <div class="field full"><label class="checkbox"><input id="pipeline-rewrite-domain" name="rewriteDomain" type="checkbox"><span>Подменять домен</span></label></div>
       <div class="field full"><label for="pipeline-domain">Целевой домен</label><input id="pipeline-domain" name="targetDomain" value="CORP" maxlength="253" placeholder="CORP"><small>Например: \\\\CORP_TEST\\demo_owner → \\\\CORP\\demo_owner. Меняется только домен в v8users.OSName; имя учётной записи сохраняется.</small></div>
       </div><div class="form-actions"><button class="button primary" type="submit">Сохранить правило</button></div><div class="form-result" role="status"></div></form>
-      <p class="muted">Для каждой пары «база + источник» сохраняется своё правило. Снятая галочка отключает подмену для этой пары. Роли, пароли и двоичные данные пользователей не изменяются. При совпадении будущих учёток или ошибке цепочка SQL-операций откатывается.</p>
-    </div>${pipelines.length ? `<div class="table-wrap"><table><thead><tr><th>База / сервер</th><th>Источник</th><th>Подмена домена</th><th></th></tr></thead><tbody>${pipelines.map((pipeline,index)=>`<tr><td>${esc(pipeline.database)}<small>${esc(pipeline.server)}</small></td><td>${esc(restoreSourceLabels[pipeline.sourceKind] ?? pipeline.sourceKind)}</td><td>${pipeline.operations.length ? esc(pipeline.operations[0].targetDomain) : "Выключено"}</td><td><button type="button" class="button" data-pipeline-edit="${index}">Изменить</button> <button type="button" class="button" data-pipeline-delete="${index}">Удалить</button></td></tr>`).join("")}</tbody></table></div>` : '<div class="empty"><p>Правила пока не назначены.</p></div>'}</section>`;
+      <p class="muted">Правило .bak общее для Full, Shrink и копирования Dev-базы; правило .dt задаётся отдельно. Сервер: ${esc(settings.connection.server || "сначала сохраните подключение")}. Снятая галочка отключает подмену. Роли, пароли и двоичные данные пользователей не изменяются.</p>
+    </div>${pipelines.length ? `<div class="table-wrap"><table><thead><tr><th>Вид базы / сервер</th><th>Архив</th><th>Подмена домена</th><th></th></tr></thead><tbody>${pipelines.map((pipeline,index)=>`<tr><td>${esc(pipeline.sourceType)}<small>${esc(pipeline.server)}</small>${pipeline.migrationNotice ? `<small class="error-inline">${esc(pipeline.migrationNotice)}</small>` : ""}</td><td>${esc(restoreFormatLabels[pipeline.archiveFormat] ?? pipeline.archiveFormat)}</td><td>${pipeline.operations.length ? esc(pipeline.operations[0].targetDomain) : "Выключено"}</td><td><button type="button" class="button" data-pipeline-edit="${index}">Изменить</button> <button type="button" class="button" data-pipeline-delete="${index}">Удалить</button></td></tr>`).join("")}</tbody></table></div>` : '<div class="empty"><p>Правила пока не назначены.</p></div>'}</section>`;
 }
 
 function settingsPage() {
@@ -194,13 +194,11 @@ function settingsPage() {
           <div class="field full"><label for="dt-backup-directory">Отдельный каталог .dt</label><input id="dt-backup-directory" name="dtBackupDirectory" value="${esc(dt.backupDirectory ?? "")}" maxlength="2048"><small>Путь со стороны службы DevRefresh. Имена: uho_ke.dt или uho_ke_18-11-2026.dt. Применяются соответствия типов бэкапов.</small></div>
           <div class="field full"><label for="ibcmd-directory">Папка bin платформы 1С с IBCMD</label><input id="ibcmd-directory" name="ibcmdDirectory" value="${esc(dt.ibcmdDirectory ?? "")}" placeholder="C:\\Program Files\\1cv8\\8.3.27.2214\\bin" maxlength="2048"><small>Полная установленная Windows-платформа версии 8.3.20 или новее; в папке должен находиться ibcmd.exe.</small></div>
           <div class="field full"><label for="ibcmd-working-directory">Рабочий каталог IBCMD</label><input id="ibcmd-working-directory" name="ibcmdWorkingDirectory" value="${esc(dt.workingDirectory ?? "")}" maxlength="2048"><small>Пусто — каталог data/ibcmd установленного DevRefresh. Для каждого задания создаётся отдельная папка. Службе нужны права записи.</small></div>
-          <div class="field"><label for="ibcmd-infobase-user">Администратор информационной базы 1С</label><input id="ibcmd-infobase-user" name="ibcmdInfobaseUser" value="${esc(dt.infobaseUser ?? "")}" maxlength="256" autocomplete="off"><small>Учётная запись существующей целевой ИБ. Пусто — база без пользователей или вход от имени службы.</small></div>
-          <div class="field"><label for="ibcmd-infobase-password">Пароль администратора ИБ</label><input id="ibcmd-infobase-password" name="ibcmdInfobasePassword" type="password" maxlength="1024" autocomplete="new-password" placeholder="${dt.infobasePasswordConfigured ? "Сохранён · оставьте пустым" : "Пароль 1С"}"><label class="checkbox"><input name="ibcmdClearInfobasePassword" type="checkbox"><span>Очистить сохранённый пароль ИБ</span></label></div>
           <div class="field"><label for="ibcmd-sql-username">Отдельный SQL-пользователь IBCMD</label><input id="ibcmd-sql-username" name="ibcmdSqlUsername" value="${esc(dt.sqlUsername ?? "")}" maxlength="256" autocomplete="off"><small>Пусто — использовать общий SQL-логин выше. При Windows-аутентификации DevRefresh укажите здесь SQL-логин для IBCMD.</small></div>
           <div class="field"><label for="ibcmd-sql-password">Пароль отдельного SQL-пользователя</label><input id="ibcmd-sql-password" name="ibcmdSqlPassword" type="password" maxlength="1024" autocomplete="new-password" placeholder="${dt.sqlPasswordConfigured ? "Сохранён · оставьте пустым" : "Пароль SQL Server"}"></div>
           <div class="field"><label for="ibcmd-timeout">Таймаут загрузки, минут</label><input id="ibcmd-timeout" name="ibcmdTimeoutMinutes" type="number" min="1" max="1440" value="${esc(dt.timeoutMinutes ?? 360)}"></div>
         </div>
-        <p class="muted">Загрузка .dt полностью заменяет базу. IBCMD получает разрешение завершить сеансы; требуется монопольный доступ 1С. Для базы в обычном кластере на время загрузки остановите фоновые задания и новые подключения.</p>
+        <p class="muted">Перед загрузкой .dt целевая SQL-база удаляется. IBCMD создаёт новую базу через infobase create --restore. Нужны только SQL-логин и пароль с правом создания баз. Если создание завершится ошибкой, прежняя база будет утрачена. Остановите фоновые задания и новые подключения 1С.</p>
         <button type="button" class="button" data-action="test-ibcmd">Проверить IBCMD</button>
         <hr class="divider"><h3>После актуализации</h3>
         <label class="checkbox"><input name="runDbccCheckDb" type="checkbox" ${value.runDbccCheckDb ? "checked" : ""}><span>Проверять целостность SQL-базы (DBCC CHECKDB)<small>Выполняется в конце актуализации. Настройка применяется к новым заданиям.</small></span></label>
@@ -304,8 +302,6 @@ function settingsInput(form) {
     dtRestore: form.elements.dtEnabled ? {
       enabled: form.elements.dtEnabled.checked, backupDirectory: form.elements.dtBackupDirectory.value,
       ibcmdDirectory: form.elements.ibcmdDirectory.value, workingDirectory: form.elements.ibcmdWorkingDirectory.value,
-      infobaseUser: form.elements.ibcmdInfobaseUser.value, infobasePassword: form.elements.ibcmdInfobasePassword.value || null,
-      clearInfobasePassword: form.elements.ibcmdClearInfobasePassword.checked,
       sqlUsername: form.elements.ibcmdSqlUsername.value, sqlPassword: form.elements.ibcmdSqlPassword.value || null,
       timeoutMinutes: form.elements.ibcmdTimeoutMinutes.valueAsNumber
     } : null
@@ -378,7 +374,7 @@ document.addEventListener("submit", async event => {
   });
   if (form.id === "restore-pipeline-form") return busy(form, async () => {
     await api("/api/admin/restore-pipelines", {method:"PUT",body:JSON.stringify({
-      database:form.elements.database.value.trim(),sourceKind:form.elements.sourceKind.value,
+      sourceType:form.elements.sourceType.value.trim(),archiveFormat:form.elements.archiveFormat.value,
       rewriteDomain:form.elements.rewriteDomain.checked,targetDomain:form.elements.targetDomain.value.trim()})});
     await navigate("settings");toast("Правило операций сохранено.");
   });
@@ -392,15 +388,15 @@ document.addEventListener("click", async event => {
       const pipeline=state.settings.restorePipelines[Number(button.dataset.pipelineEdit)];
       if (pipeline.server.toLowerCase() !== state.settings.connection.server.toLowerCase()) throw new Error("Сначала выберите SQL Server, к которому относится правило.");
       const form=document.querySelector("#restore-pipeline-form");
-      form.elements.database.value=pipeline.database;form.elements.sourceKind.value=pipeline.sourceKind;
+      form.elements.sourceType.value=pipeline.sourceType;form.elements.archiveFormat.value=pipeline.archiveFormat;
       form.elements.rewriteDomain.checked=pipeline.operations.length>0;
       form.elements.targetDomain.value=pipeline.targetDomain ?? pipeline.operations[0]?.targetDomain ?? "CORP";
-      form.elements.targetDomain.required=form.elements.rewriteDomain.checked;form.elements.database.focus();
+      form.elements.targetDomain.required=form.elements.rewriteDomain.checked;form.elements.sourceType.focus();
     }
     if (button.dataset.pipelineDelete !== undefined) {
       const pipeline=state.settings.restorePipelines[Number(button.dataset.pipelineDelete)];
       button.disabled=true;
-      try { await api(`/api/admin/restore-pipelines/${encodeURIComponent(pipeline.database)}/${encodeURIComponent(pipeline.sourceKind)}?server=${encodeURIComponent(pipeline.server)}`,{method:"DELETE"});await navigate("settings");toast("Правило удалено."); }
+      try { await api(`/api/admin/restore-pipelines/${encodeURIComponent(pipeline.sourceType)}/${encodeURIComponent(pipeline.archiveFormat)}?server=${encodeURIComponent(pipeline.server)}`,{method:"DELETE"});await navigate("settings");toast("Правило удалено."); }
       finally {button.disabled=false;}
     }
     if (button.dataset.page) await navigate(button.dataset.page);

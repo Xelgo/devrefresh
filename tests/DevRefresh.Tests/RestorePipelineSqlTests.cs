@@ -39,7 +39,7 @@ public sealed class RestorePipelineSqlTests
             }
             catch{await fixture.DisposeAsync();throw;}
         }
-        public RestorePipeline Pipeline(params string[] domains)=>new("localhost",Database,"full",
+        public RestorePipeline Pipeline(params string[] domains)=>new("localhost","drptest","bak",
             domains.Select(x=>new RestoreOperation(RestorePipelineRules.WindowsDomain,x)).ToArray(),"now","test");
         public async ValueTask DisposeAsync()
         {
@@ -61,24 +61,24 @@ public sealed class RestorePipelineSqlTests
     {
         await using var fixture=await Fixture.Create();await using var db=await fixture.Open();
         var before=await Fingerprint(db);var executor=new RestorePipelineExecutor();
-        var result=Assert.Single(await executor.Apply(db,fixture.Pipeline("CORP"),_=>{},CancellationToken.None));
+        var result=Assert.Single(await executor.Apply(db,fixture.Pipeline("CORP"),fixture.Database,_=>{},CancellationToken.None));
         Assert.Equal(2,result.Changed);Assert.Equal(1,result.Unchanged);Assert.Equal(before,await Fingerprint(db));
         Assert.Equal(@"\\CORP\first",await RestoreSql.Scalar<string>(db,"SELECT OSName FROM dbo.v8users WHERE Name='first'"));
-        Assert.Equal(0,Assert.Single(await executor.Apply(db,fixture.Pipeline("CORP"),_=>{},CancellationToken.None)).Changed);
+        Assert.Equal(0,Assert.Single(await executor.Apply(db,fixture.Pipeline("CORP"),fixture.Database,_=>{},CancellationToken.None)).Changed);
     }
     [DomainSqlFact]
     public async Task CollisionDoesNotWriteAnyRows()
     {
         await using var fixture=await Fixture.Create();await using var db=await fixture.Open();
         await RestoreSql.Execute(db,"UPDATE dbo.v8users SET OSName=N'\\CORP\first' WHERE Name='existing'");
-        await Assert.ThrowsAsync<InputException>(()=>new RestorePipelineExecutor().Apply(db,fixture.Pipeline("CORP"),_=>{},CancellationToken.None));
+        await Assert.ThrowsAsync<InputException>(()=>new RestorePipelineExecutor().Apply(db,fixture.Pipeline("CORP"),fixture.Database,_=>{},CancellationToken.None));
         Assert.Equal(@"\\OLD\first",await RestoreSql.Scalar<string>(db,"SELECT OSName FROM dbo.v8users WHERE Name='first'"));
     }
     [DomainSqlFact]
     public async Task FailureOfTheNextOperationRollsBackTheWholeChain()
     {
         await using var fixture=await Fixture.Create();await using var db=await fixture.Open();
-        await Assert.ThrowsAsync<InputException>(()=>new RestorePipelineExecutor().Apply(db,fixture.Pipeline("CORP",new string('D',128)),_=>{},CancellationToken.None));
+        await Assert.ThrowsAsync<InputException>(()=>new RestorePipelineExecutor().Apply(db,fixture.Pipeline("CORP",new string('D',128)),fixture.Database,_=>{},CancellationToken.None));
         Assert.Equal(@"\\OLD\first",await RestoreSql.Scalar<string>(db,"SELECT OSName FROM dbo.v8users WHERE Name='first'"));
         Assert.Equal(@"\\OTHER\second",await RestoreSql.Scalar<string>(db,"SELECT OSName FROM dbo.v8users WHERE Name='second'"));
     }

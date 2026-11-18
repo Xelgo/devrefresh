@@ -341,9 +341,9 @@ app.MapPost("/api/admin/ibcmd/test",async(SettingsInput input,SettingsService se
     Results.Ok(new {version=(await ibcmd.Probe(settings.Prepare(input),token)).ToString()}));
 app.MapPut("/api/admin/restore-pipelines",(RestorePipelineInput input,HttpContext context,Store store,SessionService sessions)=>
     Results.Ok(store.SaveRestorePipeline(input,sessions.Current(context)!.Name)));
-app.MapDelete("/api/admin/restore-pipelines/{database}/{source}",(string database,string source,string server,HttpContext context,Store store,SessionService sessions)=>
+app.MapDelete("/api/admin/restore-pipelines/{sourceType}/{format}",(string sourceType,string format,string server,HttpContext context,Store store,SessionService sessions)=>
 {
-    store.DeleteRestorePipeline(server,database,source,sessions.Current(context)!.Name);
+    store.DeleteRestorePipeline(server,sourceType,format,sessions.Current(context)!.Name);
     return Results.Ok(new {ok=true});
 });
 app.MapPut("/api/admin/security", async (SecurityInput input, HttpContext context, Store store,

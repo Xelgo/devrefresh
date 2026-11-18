@@ -7,7 +7,7 @@ public sealed record MigrationResult(int FromVersion, int ToVersion, string? Bac
 
 public static class DatabaseMigrator
 {
-    public const int LatestVersion = 12;
+    public const int LatestVersion = 13;
     public static IReadOnlyList<SchemaMigration> Migrations { get; } =
     [
         new(1, "Initial administration and settings", """
@@ -72,6 +72,14 @@ public static class DatabaseMigrator
         new(12, "Restore operation pipelines by server, database and archive type", """
             CREATE TABLE restore_pipelines(server TEXT NOT NULL COLLATE NOCASE,database_name TEXT NOT NULL COLLATE NOCASE,
                 source_kind TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(server,database_name,source_kind));
+            """),
+        new(13, "Restore operations by archive type and format; SQL-only IBCMD create", """
+            ALTER TABLE restore_pipelines RENAME TO restore_pipelines_legacy;
+            ALTER TABLE restore_pipelines_legacy ADD COLUMN migrated INTEGER NOT NULL DEFAULT 0;
+            CREATE TABLE restore_pipelines(server TEXT NOT NULL COLLATE NOCASE,source_type TEXT NOT NULL COLLATE NOCASE,
+                archive_format TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(server,source_type,archive_format));
+            UPDATE settings SET value=json_remove(value,'$.DtRestore.InfobaseUser','$.DtRestore.ProtectedInfobasePassword') WHERE json_valid(value);
+            UPDATE workflow_jobs SET request=json_remove(request,'$.Settings.DtRestore.InfobaseUser','$.Settings.DtRestore.ProtectedInfobasePassword','$.Pipeline') WHERE json_valid(request);
             """)
     ];
 

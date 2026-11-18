@@ -3,31 +3,27 @@ using Microsoft.AspNetCore.DataProtection;
 namespace DevRefresh;
 
 public sealed record DtRestoreSettings(bool Enabled,string BackupDirectory,string IbcmdDirectory,
-    string WorkingDirectory,string InfobaseUser,string ProtectedInfobasePassword,string SqlUsername,
-    string ProtectedSqlPassword,int TimeoutMinutes=360);
+    string WorkingDirectory,string SqlUsername="",string ProtectedSqlPassword="",int TimeoutMinutes=360);
 public sealed record DtRestoreInput(bool Enabled,string BackupDirectory,string IbcmdDirectory,
-    string WorkingDirectory,string InfobaseUser,string? InfobasePassword=null,string SqlUsername="",
-    string? SqlPassword=null,int TimeoutMinutes=360,bool ClearInfobasePassword=false);
+    string WorkingDirectory,string SqlUsername="",string? SqlPassword=null,int TimeoutMinutes=360);
 
 public static class DtRestoreConfiguration
 {
     internal const string PasswordPurpose="DevRefresh.IbcmdPassword.v1";
-    public static DtRestoreSettings Empty => new(false,"","","","","","","",360);
+    public static DtRestoreSettings Empty => new(false,"","","","","",360);
 
     public static DtRestoreSettings? Prepare(DtRestoreInput? input,DtRestoreSettings? previous,IDataProtectionProvider protection)
     {
         if(input is null)return previous;
         var protector=protection.CreateProtector(PasswordPurpose);
-        var user=input.InfobaseUser.Trim();var sqlUser=input.SqlUsername.Trim();
-        if(new[]{user,sqlUser}.Any(x=>x.Length>256 || x.Any(char.IsControl)) ||
-            new[]{input.InfobasePassword,input.SqlPassword}.Any(x=>x is not null && (x.Length>1024 || x.Any(char.IsControl))))
+        var sqlUser=input.SqlUsername.Trim();
+        if(sqlUser.Length>256 || sqlUser.Any(char.IsControl) ||
+            input.SqlPassword is {} value && (value.Length>1024 || value.Any(char.IsControl)))
             throw new InputException("Проверьте имена и пароли IBCMD: управляющие символы не допускаются.");
         string Password(string? value,string old,bool same,bool clear=false) => clear?"":
             !string.IsNullOrEmpty(value)?protector.Protect(value):same?old:"";
         var result=new DtRestoreSettings(input.Enabled,input.BackupDirectory.Trim(),input.IbcmdDirectory.Trim(),
-            input.WorkingDirectory.Trim(),user,
-            Password(input.InfobasePassword,previous?.ProtectedInfobasePassword??"",user==previous?.InfobaseUser,
-                input.ClearInfobasePassword || user.Length==0),
+            input.WorkingDirectory.Trim(),
             sqlUser,Password(input.SqlPassword,previous?.ProtectedSqlPassword??"",sqlUser==previous?.SqlUsername,sqlUser.Length==0),
             input.TimeoutMinutes);
         foreach(var path in new[]{result.BackupDirectory,result.IbcmdDirectory,result.WorkingDirectory})
@@ -45,7 +41,6 @@ public static class DtRestoreConfiguration
     {
         var settings=value??Empty;
         return new {settings.Enabled,settings.BackupDirectory,settings.IbcmdDirectory,settings.WorkingDirectory,
-            settings.InfobaseUser,InfobasePasswordConfigured=settings.ProtectedInfobasePassword.Length>0,
             settings.SqlUsername,SqlPasswordConfigured=settings.ProtectedSqlPassword.Length>0,settings.TimeoutMinutes};
     }
 

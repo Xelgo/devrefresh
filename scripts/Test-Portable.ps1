@@ -76,12 +76,12 @@ try {
     New-Item -ItemType Directory -Path $taskBackupPath | Out-Null
     $taskSettings = @{server='tcp:127.0.0.1,1';authentication='sql';username='test_sql';password=$taskSqlPassword;backupDirectory=$taskBackupPath;sqlBackupDirectory=$taskBackupPath;trustServerCertificate=$false}
     $taskSettings.dtRestore=@{enabled=$false;backupDirectory=(Join-Path $taskSmoke 'test-dt');ibcmdDirectory='';workingDirectory='';
-        infobaseUser='test_ib_admin';infobasePassword=$taskIbcmdPassword;sqlUsername='';timeoutMinutes=20}
+        sqlUsername='dt_sql';sqlPassword=$taskIbcmdPassword;timeoutMinutes=20}
     $taskSaved = Invoke-TestApi 'PUT' '/api/admin/settings' $taskSettings
     Assert-True ($taskSaved.StatusCode -eq 200) 'Settings save failed in portable executable.'
     Assert-True (-not $taskSaved.Raw.Contains($taskSqlPassword)) 'SQL password leaked in API response.'
     Assert-True (-not $taskSaved.Raw.Contains($taskIbcmdPassword)) 'IBCMD password leaked in API response.'
-    $taskPipeline=Invoke-TestApi 'PUT' '/api/admin/restore-pipelines' @{database='bp_dev_test';sourceKind='dt';rewriteDomain=$true;targetDomain='CORP'}
+    $taskPipeline=Invoke-TestApi 'PUT' '/api/admin/restore-pipelines' @{sourceType='bp';archiveFormat='dt';rewriteDomain=$true;targetDomain='CORP'}
     Assert-True ($taskPipeline.StatusCode -eq 200) 'Restore pipeline save failed in portable executable.'
     $taskTest = Invoke-TestApi 'POST' '/api/admin/connection/test' $taskSettings
     Assert-True ($taskTest.StatusCode -eq 502) ('Native SQL driver must return a controlled connection error, got ' + $taskTest.StatusCode)
@@ -96,7 +96,7 @@ try {
     $taskLogin = Invoke-TestApi 'POST' '/api/login' @{username='test_admin';password=$taskPassword}
     Assert-True ($taskLogin.StatusCode -eq 200) 'Saved administrator could not log in after restart.'
     $taskDtAfterRestart=Invoke-TestApi 'GET' '/api/admin/settings'
-    Assert-True $taskDtAfterRestart.Body.connection.dtRestore.infobasePasswordConfigured 'IBCMD secret was not preserved after restart.'
+    Assert-True $taskDtAfterRestart.Body.connection.dtRestore.sqlPasswordConfigured 'IBCMD secret was not preserved after restart.'
     Assert-True ($taskDtAfterRestart.Body.connection.dtRestore.timeoutMinutes -eq 20) 'IBCMD configuration was not preserved.'
     Assert-True ($taskDtAfterRestart.Body.restorePipelines.Count -eq 1) 'Restore pipeline was not preserved after restart.'
     Assert-True ($taskDtAfterRestart.Body.restorePipelines[0].operations[0].targetDomain -eq 'CORP') 'Restore pipeline domain was not preserved.'

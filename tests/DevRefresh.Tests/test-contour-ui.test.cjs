@@ -71,9 +71,10 @@ test('settings exposes DT catalogs, IBCMD location, credentials, timeout and a h
     ibcmdDirectory:'C:\\\\1cv8\\\\bin',workingDirectory:'',infobaseUser:'Administrator',
     infobasePasswordConfigured:true,sqlUsername:'',sqlPasswordConfigured:false,timeoutMinutes:240};settingsPage()`,ctx);
   for(const name of ['dtEnabled','dtBackupDirectory','ibcmdDirectory','ibcmdWorkingDirectory',
-    'ibcmdInfobaseUser','ibcmdInfobasePassword','ibcmdClearInfobasePassword','ibcmdSqlUsername','ibcmdSqlPassword','ibcmdTimeoutMinutes'])
+    'ibcmdSqlUsername','ibcmdSqlPassword','ibcmdTimeoutMinutes'])
     assert.match(content.innerHTML,new RegExp(`name="${name}"`));
   assert.match(content.innerHTML,/data-action="test-ibcmd"/);
+  assert.doesNotMatch(content.innerHTML,/name="ibcmdInfobase/);
   assert.match(content.innerHTML,/name="ibcmdTimeoutMinutes"[^>]*value="240"/);
 });
 
@@ -85,16 +86,16 @@ test('database list displays a DT archive when no BAK is available',()=>{
   assert.doesNotMatch(content.innerHTML,/Файл не найден/);
 });
 
-test('post-restore settings assign a domain checkbox and value to an exact database and archive type',()=>{
+test('post-restore settings assign domain rules to an archive type and BAK or DT format',()=>{
   const {ctx,content}=context();
-  vm.runInContext(`state.settings.restorePipelines=[{server:'DEV-SQL',database:'bp_dev_owner',sourceKind:'dt',
+  vm.runInContext(`state.settings.restorePipelines=[{server:'DEV-SQL',sourceType:'bp',archiveFormat:'dt',
     operations:[{kind:'windows-domain',targetDomain:'CORP'}]}];settingsPage()`,ctx);
-  for(const name of ['database','sourceKind','rewriteDomain','targetDomain'])
+  for(const name of ['sourceType','archiveFormat','rewriteDomain','targetDomain'])
     assert.match(content.innerHTML,new RegExp(`name="${name}"`));
-  for(const kind of ['full','shrink','dt','database'])
+  for(const kind of ['bak','dt'])
     assert.match(content.innerHTML,new RegExp(`<option value="${kind}">`));
   assert.match(content.innerHTML,/data-pipeline-edit="0"/);
-  assert.match(content.innerHTML,/bp_dev_owner/);
+  assert.match(content.innerHTML,/>bp<small>/);
 });
 
 test('pipeline submit sends checkbox state, target domain and archive type',async()=>{
@@ -102,9 +103,9 @@ test('pipeline submit sends checkbox state, target domain and archive type',asyn
   ctx.capture=(url,options)=>requests.push({url,body:JSON.parse(options.body)});
   vm.runInContext('api=async(url,options)=>capture(url,options);busy=async(form,action)=>action();navigate=async()=>{};toast=()=>{}',ctx);
   const form=new Form();form.id='restore-pipeline-form';form.method='post';
-  form.elements={database:{value:' bp_dev_owner '},sourceKind:{value:'shrink'},rewriteDomain:{checked:true},targetDomain:{value:' CORP '}};
+  form.elements={sourceType:{value:' bp '},archiveFormat:{value:'bak'},rewriteDomain:{checked:true},targetDomain:{value:' CORP '}};
   await listeners.submit({target:form,preventDefault(){}});
-  assert.deepEqual(requests[0],{url:'/api/admin/restore-pipelines',body:{database:'bp_dev_owner',sourceKind:'shrink',rewriteDomain:true,targetDomain:'CORP'}});
+  assert.deepEqual(requests[0],{url:'/api/admin/restore-pipelines',body:{sourceType:'bp',archiveFormat:'bak',rewriteDomain:true,targetDomain:'CORP'}});
   form.elements.rewriteDomain.checked=false;
   await listeners.submit({target:form,preventDefault(){}});
   assert.equal(requests[1].body.rewriteDomain,false);
