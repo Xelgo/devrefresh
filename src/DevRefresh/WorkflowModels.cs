@@ -13,18 +13,18 @@ public sealed record ReductionProfile(string SourceKey,string AnalysisId,string 
     ReductionRule[] Rules,string UpdatedAt,string UpdatedBy);
 public sealed record RefreshInput(string Database,bool Shrink,bool Pii,string? ProfileRevision,
     ReductionRule[]? Rules,bool ConfirmReplace,bool ConfirmDisconnect,string? BackupName=null,DateTimeOffset? ScheduledAt=null,
-    string? SourceDatabase=null);
+    string? SourceDatabase=null,bool Dt=false);
 public sealed record ReductionEstimateInput(string Database,string ProfileRevision,ReductionRule[] Rules,string? SourceDatabase=null);
 public sealed record WorkflowRequest(SqlSettings Settings,string BackupName,ReductionProfile? Profile,
     ReductionRule[] Rules,bool Shrink,bool ConfirmDisconnect,string? SourceDatabase=null,
-    bool UsePreparedShrink=false,string? BuildSlot=null,bool ResolveLatestBackup=false);
+    bool UsePreparedShrink=false,string? BuildSlot=null,bool ResolveLatestBackup=false,bool UseDt=false);
 public sealed record WorkflowJob(string Id,string Kind,string Actor,string? Target,string SourceKey,
     string Status,string Stage,string CreatedAt,string UpdatedAt,WorkflowRequest Request,
     string? Result,string? Error,string? ResourceName,string? PinnedBackup,DateTimeOffset? ScheduledAt=null,DateTimeOffset? StartedAt=null,
     DateTimeOffset? ReadyAt=null,string? BackgroundStatus=null,string? BackgroundError=null)
 {
     public object Public(WorkflowExecutionReport? report=null)=>new {Id,Kind,Actor,Target,SourceKey,Status,Stage,CreatedAt,UpdatedAt,ScheduledAt,StartedAt,Error,
-        Request.SourceDatabase,ReadyAt,BackgroundStatus,BackgroundError,
+        Request.SourceDatabase,Request.UseDt,ReadyAt,BackgroundStatus,BackgroundError,
         FinishedAt=report?.FinishedAt,ExecutionReport=report,
         Result=Result is null?null:WebResult(JsonNode.Parse(Result))};
     private static JsonNode? WebResult(JsonNode? node)
@@ -77,12 +77,12 @@ public static class WorkflowRules
         && Rules.ParseDatabase(target) is {IsTestContour:false}
         && Rules.ParseDatabase(source) is {IsTestContour:false} parsed && parsed.SourceKey==sourceKey;
 
-    public static (string SourceKey, DateOnly? BackupDate)? ParseBackupName(string filename)
+    public static (string SourceKey, DateOnly? BackupDate)? ParseBackupName(string filename,string extension=".bak")
     {
-        if (!filename.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
+        if (extension is not (".bak" or ".dt") || !filename.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
             return null;
 
-        var source = filename[..^4];
+        var source = filename[..^extension.Length];
         DateOnly? backupDate = null;
         if (source.Length > 11 && source[^11] == '_' &&
             DateOnly.TryParseExact(source.AsSpan(source.Length - 10), "dd-MM-yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))

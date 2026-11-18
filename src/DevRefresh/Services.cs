@@ -69,9 +69,18 @@ public sealed class SettingsService(Store store, IDataProtectionProvider protect
         if ((copyPath.Length != 0 || sqlCopyPath.Length != 0) &&
             new[] {copyPath,sqlCopyPath}.Any(path => path.Length > 2048 || !Path.IsPathFullyQualified(path) || path.Any(char.IsControl)))
             throw new InputException("Укажите оба абсолютных пути к папке временных .bak.");
+        var dt=DtRestoreConfiguration.Prepare(input.DtRestore,previous?.DtRestore,protection);
+        if(dt is {Enabled:true})
+        {
+            var dtPath=Path.TrimEndingDirectorySeparator(Path.GetFullPath(dt.BackupDirectory));
+            if(new[]{input.BackupDirectory.Trim(),shrinkPath,copyPath,dt.IbcmdDirectory,dt.WorkingDirectory}
+                .Where(x=>x.Length>0).Any(x=>string.Equals(dtPath,Path.TrimEndingDirectorySeparator(Path.GetFullPath(x)),StringComparison.OrdinalIgnoreCase)))
+                throw new InputException("Для .dt нужен отдельный каталог, отличный от каталогов .bak, IBCMD и рабочих данных.");
+        }
         return new(input.Server.Trim(), input.Authentication, input.Authentication == "sql" ? input.Username.Trim() : "",
             password, input.BackupDirectory.Trim(), input.SqlBackupDirectory.Trim(), input.TrustServerCertificate,
-            input.RunDbccCheckDb ?? previous?.RunDbccCheckDb ?? true, shrinkPath, sqlShrinkPath, copyPath, sqlCopyPath);
+            input.RunDbccCheckDb ?? previous?.RunDbccCheckDb ?? true, shrinkPath, sqlShrinkPath, copyPath, sqlCopyPath,
+            dt);
     }
 
     public string ConnectionString(SqlSettings value)
@@ -160,14 +169,14 @@ public sealed class SqlGateway(SettingsService settingsService, ILogger<SqlGatew
 
 public static class BackupCatalog
 {
-    public static (BackupFile[] Files, string? Error) Scan(string directory)
+    public static (BackupFile[] Files, string? Error) Scan(string directory,string extension=".bak")
     {
         var files = new List<BackupFile>();
         try
         {
             foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
             {
-                if (WorkflowRules.ParseBackupName(Path.GetFileName(path)) is not { } parsed) continue;
+                if (WorkflowRules.ParseBackupName(Path.GetFileName(path),extension) is not { } parsed) continue;
                 var info = new FileInfo(path);
                 if ((info.Attributes & FileAttributes.ReparsePoint) != 0) continue;
                 files.Add(new(info.Name, info.Length, new DateTimeOffset(info.LastWriteTimeUtc), parsed.SourceKey, parsed.BackupDate));
@@ -182,9 +191,9 @@ public static class BackupCatalog
         }
     }
 
-    public static BackupFile RequireLatest(string directory, string sourceKey)
+    public static BackupFile RequireLatest(string directory, string sourceKey,string extension=".bak")
     {
-        var (files, error) = Scan(directory);
+        var (files, error) = Scan(directory,extension);
         return files.FirstOrDefault(file => file.SourceKey == sourceKey)
             ?? throw new InputException(error ?? $"В каталоге нет резервного файла для типа базы «{sourceKey}».");
     }

@@ -19,6 +19,7 @@ $taskConfig | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $taskConfigPat
 $taskExe = Join-Path $taskSmoke 'app\DevRefresh.exe'
 $taskPassword = 'Synthetic-admin-test-password!'
 $taskSqlPassword = 'Synthetic-SQL-test-secret-do-not-share!'
+$taskIbcmdPassword = 'Synthetic-1C-DT-secret-do-not-share!'
 $taskHandler = [Net.Http.HttpClientHandler]::new()
 $taskClient = [Net.Http.HttpClient]::new($taskHandler)
 $taskClient.BaseAddress = [Uri]$taskBaseUrl
@@ -74,9 +75,12 @@ try {
     $taskBackupPath = Join-Path $taskSmoke 'test-backups'
     New-Item -ItemType Directory -Path $taskBackupPath | Out-Null
     $taskSettings = @{server='tcp:127.0.0.1,1';authentication='sql';username='test_sql';password=$taskSqlPassword;backupDirectory=$taskBackupPath;sqlBackupDirectory=$taskBackupPath;trustServerCertificate=$false}
+    $taskSettings.dtRestore=@{enabled=$false;backupDirectory=(Join-Path $taskSmoke 'test-dt');ibcmdDirectory='';workingDirectory='';
+        infobaseUser='test_ib_admin';infobasePassword=$taskIbcmdPassword;sqlUsername='';timeoutMinutes=20}
     $taskSaved = Invoke-TestApi 'PUT' '/api/admin/settings' $taskSettings
     Assert-True ($taskSaved.StatusCode -eq 200) 'Settings save failed in portable executable.'
     Assert-True (-not $taskSaved.Raw.Contains($taskSqlPassword)) 'SQL password leaked in API response.'
+    Assert-True (-not $taskSaved.Raw.Contains($taskIbcmdPassword)) 'IBCMD password leaked in API response.'
     $taskTest = Invoke-TestApi 'POST' '/api/admin/connection/test' $taskSettings
     Assert-True ($taskTest.StatusCode -eq 502) ('Native SQL driver must return a controlled connection error, got ' + $taskTest.StatusCode)
     Assert-True ([bool]$taskTest.Body.requestId) 'SQL error must include a request identifier.'
@@ -89,6 +93,9 @@ try {
     Assert-True (-not $taskSession.Body.setupRequired) 'SQLite state was not preserved after restart.'
     $taskLogin = Invoke-TestApi 'POST' '/api/login' @{username='test_admin';password=$taskPassword}
     Assert-True ($taskLogin.StatusCode -eq 200) 'Saved administrator could not log in after restart.'
+    $taskDtAfterRestart=Invoke-TestApi 'GET' '/api/admin/settings'
+    Assert-True $taskDtAfterRestart.Body.connection.dtRestore.infobasePasswordConfigured 'IBCMD secret was not preserved after restart.'
+    Assert-True ($taskDtAfterRestart.Body.connection.dtRestore.timeoutMinutes -eq 20) 'IBCMD configuration was not preserved.'
     $taskSettings.password = $null
     $taskAfterRestart = Invoke-TestApi 'POST' '/api/admin/connection/test' $taskSettings
     Assert-True ($taskAfterRestart.StatusCode -eq 502) 'Saved SQL password could not be decrypted after restart.'
@@ -113,6 +120,7 @@ try {
             try { $taskContent = $taskReader.ReadToEnd() } finally { $taskReader.Dispose() }
             Assert-True (-not $taskContent.Contains($taskPassword)) 'Administrator password leaked into diagnostics.'
             Assert-True (-not $taskContent.Contains($taskSqlPassword)) 'SQL password leaked into diagnostics.'
+            Assert-True (-not $taskContent.Contains($taskIbcmdPassword)) 'IBCMD password leaked into diagnostics.'
             if ($taskEntry.FullName -like '*.jsonl') { $taskLogFound = $true }
             if ($taskContent.Contains([string]$taskTest.Body.requestId)) { $taskCorrelationFound = $true }
         }

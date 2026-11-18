@@ -4,7 +4,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <Version>0.2.54</Version>
+    <Version>0.2.55</Version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="DaJet.Metadata" Version="5.1.5" />
@@ -17,6 +17,7 @@
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="DevRefresh.Tests" />
     <Content Remove="App_Data/**" />
     <None Remove="App_Data/**" />
   </ItemGroup>

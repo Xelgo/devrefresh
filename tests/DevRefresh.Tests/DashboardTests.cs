@@ -90,10 +90,10 @@ public sealed class DashboardTests
         var start = DateTimeOffset.UtcNow.AddHours(-1);
 
         void Finish(string database, bool shrink, long milliseconds, string status = "Succeeded", bool legacy = false,
-            DateTimeOffset? finishedAt = null)
+            DateTimeOffset? finishedAt = null,bool dt=false)
         {
             var end = finishedAt ?? start.AddMinutes(-10);
-            var historical = store.CreateJob("refresh",actor,"bp",database,request with { Shrink = shrink });
+            var historical = store.CreateJob("refresh",actor,"bp",database,request with { Shrink = shrink,UseDt=dt });
             Assert.True(store.TryStartJob(historical.Id,end.AddMilliseconds(-milliseconds)));
             store.UpdateJob(historical.Id,status,"done",executionReport:legacy ? null : new(end,milliseconds,[],[],null));
             Timestamp(app,historical.Id,end);
@@ -105,11 +105,12 @@ public sealed class DashboardTests
         Finish(target,false,900000,status:"Failed");
         Finish(target,false,900000,finishedAt:start.AddMinutes(1));
         Finish(target,true,300000);
+        Finish(target,false,9999999,dt:true);
         Finish("other_bp_dev_demo_owner",false,900000);
 
-        async Task CheckEstimate(bool shrink, long expected)
+        async Task CheckEstimate(bool shrink, long expected,bool dt=false)
         {
-            var job = store.CreateJob("refresh",actor,"bp",target,request with { Shrink = shrink });
+            var job = store.CreateJob("refresh",actor,"bp",target,request with { Shrink = shrink,UseDt=dt });
             Assert.True(store.TryStartJob(job.Id,start));
             var body = (await developer.GetFromJsonAsync<JsonObject>("/api/jobs/dashboard"))!;
             var row = body["jobs"]!.AsArray().Single(j => j!["id"]!.GetValue<string>() == job.Id)!;
@@ -121,6 +122,7 @@ public sealed class DashboardTests
 
         await CheckEstimate(false,120000);
         await CheckEstimate(true,300000);
+        await CheckEstimate(false,9999999,dt:true);
     }
 
     [Fact]

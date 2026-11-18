@@ -75,8 +75,12 @@ public static class ServiceKeyPreparation
         using var cmd=db.CreateCommand();cmd.CommandText="SELECT value FROM settings WHERE id=1";
         if(cmd.ExecuteScalar() is not string json)return;
         var settings=JsonSerializer.Deserialize<SqlSettings>(json);
-        if(string.IsNullOrEmpty(settings?.ProtectedPassword))return;
+        if(settings is null)return;
         var provider=DataProtectionProvider.Create(new DirectoryInfo(keyPath),options=>options.SetApplicationName("DevRefresh"));
-        _=provider.CreateProtector("DevRefresh.SqlPassword.v1").Unprotect(settings.ProtectedPassword);
+        if(!string.IsNullOrEmpty(settings.ProtectedPassword))
+            _=provider.CreateProtector("DevRefresh.SqlPassword.v1").Unprotect(settings.ProtectedPassword);
+        if(settings.DtRestore is {} dt)
+            foreach(var password in new[]{dt.ProtectedInfobasePassword,dt.ProtectedSqlPassword}.Where(x=>x.Length>0))
+                _=provider.CreateProtector(DtRestoreConfiguration.PasswordPurpose).Unprotect(password);
     }
 }

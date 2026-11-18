@@ -122,3 +122,64 @@ test('only the second dialog can submit the replacement and approve ending targe
   assert.deepEqual(requests,[['/api/refresh',{database:'bp_dev_owner',shrink:false,pii:false,
     sourceDatabase:'bp_dev_source',confirmReplace:true,confirmDisconnect:true,scheduledAt:null}]]);
 });
+
+test('DT is the fourth fallback after Shrink, Full and a usable developer copy',()=>{
+  const {ctx}=fixture([]);
+  const options={dtConfigured:true,dtBackup:{name:'bp.dt'}};
+  ctx.options=options;
+  const preferred=()=>vm.runInContext('preferredRefreshSource(options)',ctx);
+  assert.equal(preferred(),'dt');
+  options.copySources=[{name:'bp_dev_source'}];options.copyBackupConfigured=true;
+  assert.equal(preferred(),'database');
+  options.backupName='bp.bak';assert.equal(preferred(),'archive');
+  options.shrinkBackup={};assert.equal(preferred(),'shrink');
+  options.shrinkBackup=null;options.backupName=null;options.copyBackupConfigured=false;
+  assert.equal(preferred(),'dt');
+  options.dtConfigured=false;assert.equal(preferred(),'archive');
+});
+
+test('DT dialog selects the archive and permits a future archive only for scheduled work',async()=>{
+  const {ctx}=fixture([]);
+  const controls={notice:{},submit:{},source:{}};
+  const form={elements:{sourceMode:{value:'dt',options:[{},{},{},{}]},runNow:{checked:true},sourceDatabase:{value:''}},
+    querySelector:s=>s==='#refresh-publish-notice'?controls.notice:s==='#refresh-submit'?controls.submit:controls.source,
+    getAttribute:()=>null};
+  const dialog={innerHTML:'',classList:{add(){}},showModal(){},querySelector:()=>form};
+  ctx.document.querySelector=()=>dialog;
+  const options={dtConfigured:true,dtBackup:{name:'bp_18-11-2026.dt',backupDate:'2026-11-18',size:1024**3},copySources:[],activeSessions:0};
+  ctx.api=async()=>options;
+  await vm.runInContext('openRefreshDialog({name:"bp_dev_owner"})',ctx);
+  assert.match(dialog.innerHTML,/<option value="dt" selected>\.dt через IBCMD \/ 18\.11\.2026 \/ 1 ГБ/);
+  assert.equal(controls.submit.disabled,false);
+  assert.equal(form.elements.sourceMode.options[1].disabled,true);
+  assert.match(controls.notice.textContent,/bp_18-11-2026\.dt/);
+  options.dtBackup=null;form.elements.runNow.checked=false;
+  ctx.form=form;vm.runInContext('syncRefreshSource(form)',ctx);
+  assert.equal(form.elements.sourceMode.options[3].disabled,false);
+  assert.equal(controls.submit.disabled,false);
+  form.elements.runNow.checked=true;
+  vm.runInContext('syncRefreshSource(form)',ctx);
+  assert.equal(form.elements.sourceMode.options[3].disabled,true);
+  assert.equal(controls.submit.disabled,true);
+});
+
+test('DT submission retains the replacement confirmation and sends an explicit source flag',async()=>{
+  const {ctx,events}=fixture([]);
+  ctx.state.page='databases';
+  ctx.HTMLFormElement=class {
+    id='refresh-form';elements={sourceMode:{value:'dt'},runNow:{checked:true},sourceDatabase:{value:''}};
+    getAttribute(){return null;}matches(){return false;}reportValidity(){return true;}
+    querySelector(){return {disabled:false};}
+  };
+  let close,request;
+  const confirmation={querySelector:()=>({}),showModal(){},addEventListener(name,fn){close=fn;}};
+  ctx.document.querySelector=s=>s==='#refresh-confirmation'?confirmation:{close(){}};
+  ctx.api=async(url,options)=>{request=JSON.parse(options.body);return {id:'dt-job'};};
+  ctx.busy=async(_,work)=>work();ctx.toast=ctx.rememberDashboardJob=()=>{};
+  vm.runInContext('flow.refresh={row:{name:"bp_dev_owner"}}',ctx);
+  const pending=events.submit({target:new ctx.HTMLFormElement(),preventDefault(){}});
+  assert.equal(request,undefined);
+  confirmation.returnValue='confirm';close();await pending;
+  assert.equal(request.dt,true);assert.equal(request.shrink,false);assert.equal(request.sourceDatabase,null);
+  assert.equal(request.confirmReplace,true);assert.equal(request.confirmDisconnect,true);
+});

@@ -314,7 +314,7 @@ async function openJob(id) {
     ${jobTimingMarkup(job)}
     ${binaryDataCleanupMarkup(job.executionReport?.binaryDataCleanup)}
     ${["refresh", "shrink-build"].includes(job.kind) ? jobFileSizesMarkup(job.executionReport,job.backgroundStatus) : ""}
-    ${job.result ? job.kind === "analysis" ? `<p>${esc(job.result.configuration)} ${esc(job.result.configurationVersion)} · ${number(job.result.tableCount)} таблиц · ${mb(job.result.usedMB)}</p><p>Временная база удалена. Результаты анализа сохранены.</p>` : job.kind === "preview" ? `<p>План проверен. Временная база удалена.</p>${countsMarkup(job.result)}` : job.result.shrinkBackup ? `<p>Готовый архив ${esc(job.result.shrinkBackup.name)} · ${esc(formatSize(job.result.shrinkBackup.size))}. Данные на ${esc(shrinkDataDate(job.result.shrinkBackup.dataDate))}.</p>` : job.result.restoreMode === "prepared-shrink" ? `<p>Восстановлена готовая Shrink-копия. Данные на ${esc(shrinkDataDate(job.result.shrinkDataDate))}.</p>` : `<p>${job.sourceDatabase ? "База обновлена копией другой Dev-базы." : "Бэкап восстановлен непосредственно в целевую базу."} ПД не обрабатывались. Сокращение: ${job.result.shrink ? "да" : "нет"}.${sqlCheck ? ` Проверка SQL-базы ${esc(sqlCheck)}.` : ""}</p>${countsMarkup(job.result)}` : ""}
+    ${job.result ? job.kind === "analysis" ? `<p>${esc(job.result.configuration)} ${esc(job.result.configurationVersion)} · ${number(job.result.tableCount)} таблиц · ${mb(job.result.usedMB)}</p><p>Временная база удалена. Результаты анализа сохранены.</p>` : job.kind === "preview" ? `<p>План проверен. Временная база удалена.</p>${countsMarkup(job.result)}` : job.result.shrinkBackup ? `<p>Готовый архив ${esc(job.result.shrinkBackup.name)} · ${esc(formatSize(job.result.shrinkBackup.size))}. Данные на ${esc(shrinkDataDate(job.result.shrinkBackup.dataDate))}.</p>` : job.result.restoreMode === "dt" ? `<p>База восстановлена из ${esc(job.result.backup)} через IBCMD ${esc(job.result.ibcmdVersion)}.${sqlCheck ? ` Проверка SQL-базы ${esc(sqlCheck)}.` : ""}</p>` : job.result.restoreMode === "prepared-shrink" ? `<p>Восстановлена готовая Shrink-копия. Данные на ${esc(shrinkDataDate(job.result.shrinkDataDate))}.</p>` : `<p>${job.sourceDatabase ? "База обновлена копией другой Dev-базы." : "Бэкап восстановлен непосредственно в целевую базу."} ПД не обрабатывались. Сокращение: ${job.result.shrink ? "да" : "нет"}.${sqlCheck ? ` Проверка SQL-базы ${esc(sqlCheck)}.` : ""}</p>${countsMarkup(job.result)}` : ""}
     <div class="dialog-actions"><button class="button" data-close="job-dialog">Закрыть</button></div>`;
   dialog.showModal();
 }
@@ -328,14 +328,17 @@ async function openRefreshDialog(row) {
     const options = await api(`/api/refresh/options?database=${encodeURIComponent(row.name)}`);
     const sources = options.copySources || [];
     const shrink = options.shrinkBackup;
+    const defaultSource = preferredRefreshSource(options);
+    const dt = options.dtBackup;
     const archiveDate = options.backupDate ? shrinkDataDate(options.backupDate)
       : options.backupModifiedAt ? `файл изменён ${formatDate(options.backupModifiedAt)}` : "дата недоступна";
     flow.refresh = { row, options };
     dialog.innerHTML = `<form id="refresh-form"><div class="eyebrow">Актуализация базы</div><h2 id="dialog-title" class="mono">${esc(row.name)}</h2>
       <div class="field"><label for="refresh-source-mode">Источник актуализации</label><select id="refresh-source-mode" name="sourceMode" required>
-        <option value="shrink" ${shrink ? "selected" : "disabled"}>Shrink-копия${shrink ? ` / ${esc(shrinkDataDate(shrink.dataDate))} / ${esc(refreshArchiveSize(shrink.size))}` : " / недоступна"}</option>
-        <option value="archive" ${shrink ? "" : "selected"}>Full-копия${options.backupName ? ` / ${esc(archiveDate)} / ${esc(refreshArchiveSize(options.backupSize))}` : " / недоступна"}</option>
-        <option value="database" ${sources.length && options.copyBackupConfigured ? "" : "disabled"}>Другая Dev-база${!options.copyBackupConfigured ? " / укажите каталог временных .bak" : sources.length ? "" : " / нет доступных баз"}</option>
+        <option value="shrink" ${defaultSource === "shrink" ? "selected" : shrink ? "" : "disabled"}>Shrink-копия${shrink ? ` / ${esc(shrinkDataDate(shrink.dataDate))} / ${esc(refreshArchiveSize(shrink.size))}` : " / недоступна"}</option>
+        <option value="archive" ${defaultSource === "archive" ? "selected" : ""}>Full-копия${options.backupName ? ` / ${esc(archiveDate)} / ${esc(refreshArchiveSize(options.backupSize))}` : " / недоступна"}</option>
+        <option value="database" ${defaultSource === "database" ? "selected" : sources.length && options.copyBackupConfigured ? "" : "disabled"}>Другая Dev-база${!options.copyBackupConfigured ? " / укажите каталог временных .bak" : sources.length ? "" : " / нет доступных баз"}</option>
+        <option value="dt" ${defaultSource === "dt" ? "selected" : dt ? "" : "disabled"}>.dt через IBCMD${dt ? ` / ${esc(dt.backupDate ? shrinkDataDate(dt.backupDate) : formatDate(dt.modifiedAt))} / ${esc(refreshArchiveSize(dt.size))}` : " / недоступен"}</option>
       </select></div>
       <div id="refresh-database-source" class="field" hidden><label for="refresh-source-database">База-источник</label>
         <select id="refresh-source-database" name="sourceDatabase" disabled><option value="">Выберите базу того же типа</option>
@@ -361,15 +364,29 @@ function refreshArchiveSize(bytes) {
   return `${(bytes / 1024 ** 3).toLocaleString("ru-RU", { maximumFractionDigits: 3 })} ГБ`;
 }
 
+function preferredRefreshSource(options, scheduled = false) {
+  if (options.shrinkBackup || (scheduled && options.shrinkConfigured)) return "shrink";
+  if (options.backupName || scheduled) return "archive";
+  if (options.copyBackupConfigured && options.copySources?.length) return "database";
+  if (options.dtConfigured && options.dtBackup) return "dt";
+  return "archive";
+}
+
 function syncRefreshSource(form) {
   const { options } = flow.refresh;
   const mode = form.elements.sourceMode;
   const scheduled = !form.elements.runNow.checked;
   const shrinkAvailable = Boolean(options.shrinkBackup || (scheduled && options.shrinkConfigured));
+  const dtAvailable = Boolean(options.dtConfigured && (options.dtBackup || scheduled));
+  const available = {shrink: shrinkAvailable, archive: scheduled || Boolean(options.backupName),
+    database: Boolean(options.copyBackupConfigured && options.copySources?.length), dt: dtAvailable};
   mode.options[0].disabled = !shrinkAvailable;
-  if (mode.value === "shrink" && !shrinkAvailable) mode.value = "archive";
+  if (mode.options[1]) mode.options[1].disabled = !available.archive;
+  if (mode.options[3]) mode.options[3].disabled = !dtAvailable;
+  if (!available[mode.value]) mode.value = preferredRefreshSource(options, scheduled);
   const copy = mode.value === "database";
   const shrink = mode.value === "shrink";
+  const dt = mode.value === "dt";
   const source = form.elements.sourceDatabase;
   source.disabled = !copy;
   source.required = copy;
@@ -378,9 +395,10 @@ function syncRefreshSource(form) {
   form.querySelector("#refresh-database-source").hidden = !copy;
   form.querySelector("#refresh-publish-notice").textContent = copy
     ? "DevRefresh создаст временный .bak базы-источника, восстановит его в выбранную базу и удалит файл."
+    : dt ? `.dt полностью заменяет информационную базу через IBCMD. Требуется монопольный доступ 1С. ${options.dtBackup ? `Архив: ${options.dtBackup.name}.` : "Свежий архив будет выбран при запуске задания."}`
     : shrink ? "В базу назначения заливается готовая копия, подготовленная по профилю администратора."
     : options.backupUnavailableReason || "Бэкап восстанавливается в базу назначения с сохранением записей. DevRefresh переведёт базу в SIMPLE и освободит неиспользуемое место в файлах.";
-  const hasSource = copy ? Boolean(source.value) : shrink ? shrinkAvailable : scheduled || Boolean(options.backupName);
+  const hasSource = copy ? Boolean(source.value) : available[mode.value];
   const submit = form.querySelector("#refresh-submit");
   submit.disabled = !hasSource || form.getAttribute("aria-busy") === "true";
   submit.textContent = scheduled ? "Запланировать актуализацию" : copy ? "Скопировать базу" : "Восстановить базу";
@@ -439,6 +457,7 @@ document.addEventListener("submit", async event => {
       const request = { database: refresh.row.name, shrink: sourceMode === "shrink", pii: false,
         sourceDatabase: sourceMode === "database" ? form.elements.sourceDatabase.value : null,
         confirmReplace: true, confirmDisconnect: true, scheduledAt };
+      if (sourceMode === "dt") request.dt = true;
       const confirmation = document.querySelector("#refresh-confirmation");
       confirmation.querySelector("#refresh-confirmation-target").textContent = `Я подтверждаю замену содержимого в базе ${request.database}.`;
       confirmation.returnValue = "cancel";

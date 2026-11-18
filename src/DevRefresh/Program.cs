@@ -98,6 +98,8 @@ builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<SettingsService>();
 builder.Services.AddSingleton<ISqlGateway, SqlGateway>();
 builder.Services.AddSingleton<RestoreSql>();
+builder.Services.AddSingleton<IbcmdProcessRunner>();
+builder.Services.AddSingleton<IbcmdRestore>();
 builder.Services.AddSingleton<StructureAnalyzer>();
 builder.Services.AddSingleton<DevDatabaseAnalysis>();
 builder.Services.AddSingleton<ReductionExecutor>();
@@ -333,6 +335,8 @@ app.MapPost("/api/admin/connection/test", async (SettingsInput input, HttpContex
         throw;
     }
 });
+app.MapPost("/api/admin/ibcmd/test",async(SettingsInput input,SettingsService settings,IbcmdRestore ibcmd,CancellationToken token)=>
+    Results.Ok(new {version=(await ibcmd.Probe(settings.Prepare(input),token)).ToString()}));
 app.MapPut("/api/admin/security", async (SecurityInput input, HttpContext context, Store store,
     SessionService sessions, IPasswordHasher<LocalAdmin> hasher) =>
 {
@@ -367,13 +371,16 @@ app.MapGet("/api/databases", async (HttpContext context, Store store, SessionSer
         .Where(x => Rules.CanAccessDatabase(x.Parsed, user)).ToArray();
     var (backups, backupError) = BackupCatalog.Scan(settings.BackupDirectory);
     var backupsBySource = backups.ToLookup(backup => backup.SourceKey);
+    var (dtFiles,_) = DtRestoreConfiguration.Scan(settings);
+    var dtBySource=dtFiles.ToLookup(backup=>backup.SourceKey);
     var aliases = store.GetBackupAliases();
     var entries = visible.Select(x =>
     {
         var parsed = x.Parsed!;
         var backupSource = aliases.GetValueOrDefault(parsed.SourceKey, parsed.SourceKey);
         return new DatabaseEntry(x.Database.Name, parsed.SourceKey, parsed.OwnerKey, x.Database.State,
-            backupsBySource[backupSource].FirstOrDefault(), x.Database.SizeBytes, backupSource, parsed.IsTestContour);
+            backupsBySource[backupSource].FirstOrDefault(), x.Database.SizeBytes, backupSource, parsed.IsTestContour,
+            dtBySource[backupSource].FirstOrDefault());
     }).ToArray();
     return Results.Ok(new { configured = true, databases = entries, backupError });
 });

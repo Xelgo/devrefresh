@@ -33,7 +33,7 @@ Get-ChildItem -LiteralPath $taskPackage -Recurse -File | Where-Object { $_.FullN
     $taskFiles[$taskRelative] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
 }
 $taskBuild = [ordered]@{
-    product='DevRefresh'; version=[string]$taskVersion; schemaVersion=10; packageKind='install'; runtime='win-x64'; selfContained=$true
+    product='DevRefresh'; version=[string]$taskVersion; schemaVersion=11; packageKind='install'; runtime='win-x64'; selfContained=$true
     builtAtUtc=[DateTime]::UtcNow.ToString('O'); executableSha256=$taskFiles['app/DevRefresh.exe']; files=$taskFiles
 }
 $taskBuild | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $taskPackage 'BUILD-INFO.json') -Encoding UTF8

@@ -124,11 +124,15 @@ public static class WorkflowEndpoints
             var backup=backups.FirstOrDefault(b=>b.SourceKey==backupType);
             var sources=CopySources(await gateway.List(settings,token),database,parsed.SourceKey);
             var ready=ShrinkBackups.Available(store,settings,parsed.SourceKey);
+            var (dtFiles,dtError)=DtRestoreConfiguration.Scan(settings);
+            var dtBackup=dtFiles.FirstOrDefault(x=>x.SourceKey==backupType);
             return Results.Ok(new {Database=database,SourceKey=parsed.SourceKey,BackupName=backup?.Name,
                 BackupDate=backup?.BackupDate,BackupModifiedAt=backup?.ModifiedAt,BackupSize=backup?.Size,
                 BackupUnavailableReason=backup is null ? backupError ?? $"В каталоге нет резервного файла для типа базы «{backupType}»." : null,
                 CopySources=sources.Select(x=>new {x.Name,x.SizeBytes}),CopyBackupConfigured=DatabaseCopy.BackupDirectories(settings) is not null,
                 ShrinkBackup=ready,ShrinkConfigured=ShrinkBackups.Configured(settings),
+                DtBackup=dtBackup,DtConfigured=DtRestoreConfiguration.UnavailableReason(settings) is null,
+                DtUnavailableReason=dtBackup is null?dtError??$"В каталоге .dt нет архива для типа базы «{backupType}».":null,
                 ActiveSessions=await sql.Sessions(settings,database,token),PersonalDataAvailable=false});
         });
         app.MapPost("/api/refresh/estimate",(ReductionEstimateInput input,HttpContext context,Store store,SessionService sessions,WorkflowService jobs)=>
@@ -151,6 +155,16 @@ public static class WorkflowEndpoints
             if(input.Pii)throw new InputException("Обработка персональных данных ещё не включена. В этом контуре проверяется только сокращение.");
             var settings=store.GetSettings()??throw new InputException("Не настроено подключение.");
             var backupType=ResolveBackupType(store,parsed.SourceKey);
+            if(input.Dt)
+            {
+                if(input.Shrink || input.SourceDatabase is not null || input.BackupName is not null || input.Rules is {Length:>0})
+                    throw new InputException("Выберите один источник: .dt используется отдельно от Full, Shrink и другой Dev-базы.");
+                if(DtRestoreConfiguration.UnavailableReason(settings) is {} reason)throw new InputException(reason);
+                if(input.ScheduledAt is null)DtRestoreConfiguration.RequireLatest(settings,backupType);
+                var dtJob=store.CreateJob("refresh",user.Name,parsed.SourceKey,input.Database,
+                    new(settings,"",null,[],false,input.ConfirmDisconnect,ResolveLatestBackup:true,UseDt:true),input.ScheduledAt);
+                jobs.Enqueue(dtJob);return Results.Accepted("/api/jobs/"+dtJob.Id,dtJob.Public());
+            }
             if(input.Shrink)
             {
                 if (!ShrinkBackups.Configured(settings))

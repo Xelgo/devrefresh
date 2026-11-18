@@ -125,7 +125,7 @@ function databasePage() {
     ${state.databaseError ? `<div class="notice error"><span class="symbol" aria-hidden="true">!</span><p>${esc(state.databaseError)}</p></div>` : ""}
     ${data?.backupError ? `<div class="notice"><span class="symbol" aria-hidden="true">!</span><p>${esc(data.backupError)}</p></div>` : ""}
     <section class="card"><div class="card-header"><div><h2>Базы и резервные копии</h2><p>${state.session.user.isAdmin ? "Администратору доступны все базы, соответствующие правилу имён." : `Владелец: ${esc(state.session.user.ownerKey ?? "не определён — требуется сопоставление учётной записи")}`}</p></div>${rows.length ? '<input id="database-search" class="search" aria-label="Поиск базы" placeholder="Найти базу…">' : '<span class="badge gray">Dev SQL Server</span>'}</div>
-    ${!data && !state.databaseError ? '<div class="empty"><p>Получаем список баз…</p></div>' : !configured && !state.databaseError ? `<div class="empty"><div class="empty-icon" aria-hidden="true">⚙</div><h3>Подключите Dev SQL Server</h3><p>${state.session.user.isAdmin ? "Укажите сервер, способ подключения и каталоги резервных копий. После сохранения здесь появятся базы разработки." : "Администратор ещё не настроил подключение к серверу баз."}</p>${state.session.user.isAdmin ? '<button class="button primary" data-page="settings">Настроить подключение →</button>' : ""}</div>` : !rows.length ? `<div class="empty"><div class="empty-icon" aria-hidden="true">▤</div><h3>${state.databaseError ? "Список баз недоступен" : "Доступные базы не найдены"}</h3><p>${state.databaseError ? "После проверки подключения обновите список." : "Проверьте наличие своей Dev-базы или права на базы тестового контура, например uho_ke_tk."}</p></div>` : `<div class="table-wrap"><table><thead><tr><th>База / владелец</th><th>Тип</th><th>Резервный файл</th><th>Состояние</th><th></th></tr></thead><tbody>${rows.map((row, index) => `<tr data-database="${esc(row.name.toLowerCase())}"><td><div class="database-name"><strong class="mono">${esc(row.name)}</strong><span class="database-size" data-database-size="${esc(row.name.toLowerCase())}" title="Размер файлов данных и журнала SQL, включая свободное место внутри файлов">${databaseSizeLabel(row)}</span></div><small>${row.isTestContour ? "Тестовый контур" : esc(row.ownerKey)}</small></td><td class="mono">${esc(row.sourceKey)}</td><td>${row.backup ? `${esc(row.backup.name)}<small>Изменён ${formatDate(row.backup.modifiedAt)} · ${formatSize(row.backup.size)}</small>` : `<span class="muted">Файл не найден</span>${row.backupSourceKey && row.backupSourceKey !== row.sourceKey ? `<small>Источник: ${esc(row.backupSourceKey)}</small>` : ""}`}</td><td class="database-task-cell"><span data-database-state="${esc(row.name.toLowerCase())}" class="badge ${row.state === "ONLINE" ? "" : "amber"}">${esc(row.state)}</span><div data-database-job="${esc(row.name.toLowerCase())}" hidden></div></td><td><button class="button" data-inspect="${index}">Подробнее →</button></td></tr>`).join("")}</tbody></table></div><div class="table-footer">${rows.length} баз · время отображается в часовом поясе браузера</div>`}
+    ${!data && !state.databaseError ? '<div class="empty"><p>Получаем список баз…</p></div>' : !configured && !state.databaseError ? `<div class="empty"><div class="empty-icon" aria-hidden="true">⚙</div><h3>Подключите Dev SQL Server</h3><p>${state.session.user.isAdmin ? "Укажите сервер, способ подключения и каталоги резервных копий. После сохранения здесь появятся базы разработки." : "Администратор ещё не настроил подключение к серверу баз."}</p>${state.session.user.isAdmin ? '<button class="button primary" data-page="settings">Настроить подключение →</button>' : ""}</div>` : !rows.length ? `<div class="empty"><div class="empty-icon" aria-hidden="true">▤</div><h3>${state.databaseError ? "Список баз недоступен" : "Доступные базы не найдены"}</h3><p>${state.databaseError ? "После проверки подключения обновите список." : "Проверьте наличие своей Dev-базы или права на базы тестового контура, например uho_ke_tk."}</p></div>` : `<div class="table-wrap"><table><thead><tr><th>База / владелец</th><th>Тип</th><th>Резервный файл</th><th>Состояние</th><th></th></tr></thead><tbody>${rows.map((row, index) => `<tr data-database="${esc(row.name.toLowerCase())}"><td><div class="database-name"><strong class="mono">${esc(row.name)}</strong><span class="database-size" data-database-size="${esc(row.name.toLowerCase())}" title="Размер файлов данных и журнала SQL, включая свободное место внутри файлов">${databaseSizeLabel(row)}</span></div><small>${row.isTestContour ? "Тестовый контур" : esc(row.ownerKey)}</small></td><td class="mono">${esc(row.sourceKey)}</td><td>${(row.backup || row.dtBackup) ? `${esc((row.backup || row.dtBackup).name)}<small>${row.backup ? "" : ".dt / IBCMD · "}Изменён ${formatDate((row.backup || row.dtBackup).modifiedAt)} · ${formatSize((row.backup || row.dtBackup).size)}</small>` : `<span class="muted">Файл не найден</span>${row.backupSourceKey && row.backupSourceKey !== row.sourceKey ? `<small>Источник: ${esc(row.backupSourceKey)}</small>` : ""}`}</td><td class="database-task-cell"><span data-database-state="${esc(row.name.toLowerCase())}" class="badge ${row.state === "ONLINE" ? "" : "amber"}">${esc(row.state)}</span><div data-database-job="${esc(row.name.toLowerCase())}" hidden></div></td><td><button class="button" data-inspect="${index}">Подробнее →</button></td></tr>`).join("")}</tbody></table></div><div class="table-footer">${rows.length} баз · время отображается в часовом поясе браузера</div>`}
     </section>
     <div class="notice neutral"><span class="symbol" aria-hidden="true">↻</span><p>Восстановление выполняется в фоне. При сокращении можно разово отключить таблицы и изменить даты, сохранив административный профиль.</p></div>`;
   renderDashboardJobs();
@@ -143,6 +143,7 @@ async function loadDatabases() {
 function settingsPage() {
   const settings = state.settings;
   const value = settings.connection;
+  const dt = value.dtRestore ?? {};
   document.querySelector("#content").innerHTML = `
     ${heading("Администрирование", "Настройки сервиса", "Подключение к серверу, расположение копий, доступ и журналы.")}
     <div class="settings-layout"><div>
@@ -173,6 +174,20 @@ function settingsPage() {
           <div class="field full"><label for="sql-copy-backup-directory">Путь для SQL Server</label><input id="sql-copy-backup-directory" name="sqlCopyBackupDirectory" value="${esc(value.sqlCopyBackupDirectory)}" maxlength="2048"><small>Укажите путь к той же папке. Если она находится на сервере SQL, укажите здесь локальный путь к её диску, даже если DevRefresh обращается к папке по сети.</small></div>
         </div>
         <hr class="divider"><label class="checkbox"><input name="trustServerCertificate" type="checkbox" ${value.trustServerCertificate ? "checked" : ""}><span>Доверять сертификату SQL Server без проверки цепочки<small class="muted"> · для серверов с сертификатом, которому инфраструктура пока не доверяет</small></span></label>
+        <hr class="divider"><h3>Архивы .dt и IBCMD</h3>
+        <label class="checkbox"><input name="dtEnabled" type="checkbox" ${dt.enabled ? "checked" : ""}><span>Включить восстановление из .dt через IBCMD</span></label>
+        <div class="form-grid">
+          <div class="field full"><label for="dt-backup-directory">Отдельный каталог .dt</label><input id="dt-backup-directory" name="dtBackupDirectory" value="${esc(dt.backupDirectory ?? "")}" maxlength="2048"><small>Путь со стороны службы DevRefresh. Имена: uho_ke.dt или uho_ke_18-11-2026.dt. Применяются соответствия типов бэкапов.</small></div>
+          <div class="field full"><label for="ibcmd-directory">Папка bin платформы 1С с IBCMD</label><input id="ibcmd-directory" name="ibcmdDirectory" value="${esc(dt.ibcmdDirectory ?? "")}" placeholder="C:\\Program Files\\1cv8\\8.3.27.2214\\bin" maxlength="2048"><small>Полная установленная Windows-платформа версии 8.3.20 или новее; в папке должен находиться ibcmd.exe.</small></div>
+          <div class="field full"><label for="ibcmd-working-directory">Рабочий каталог IBCMD</label><input id="ibcmd-working-directory" name="ibcmdWorkingDirectory" value="${esc(dt.workingDirectory ?? "")}" maxlength="2048"><small>Пусто — каталог data/ibcmd установленного DevRefresh. Для каждого задания создаётся отдельная папка. Службе нужны права записи.</small></div>
+          <div class="field"><label for="ibcmd-infobase-user">Администратор информационной базы 1С</label><input id="ibcmd-infobase-user" name="ibcmdInfobaseUser" value="${esc(dt.infobaseUser ?? "")}" maxlength="256" autocomplete="off"><small>Учётная запись существующей целевой ИБ. Пусто — база без пользователей или вход от имени службы.</small></div>
+          <div class="field"><label for="ibcmd-infobase-password">Пароль администратора ИБ</label><input id="ibcmd-infobase-password" name="ibcmdInfobasePassword" type="password" maxlength="1024" autocomplete="new-password" placeholder="${dt.infobasePasswordConfigured ? "Сохранён · оставьте пустым" : "Пароль 1С"}"><label class="checkbox"><input name="ibcmdClearInfobasePassword" type="checkbox"><span>Очистить сохранённый пароль ИБ</span></label></div>
+          <div class="field"><label for="ibcmd-sql-username">Отдельный SQL-пользователь IBCMD</label><input id="ibcmd-sql-username" name="ibcmdSqlUsername" value="${esc(dt.sqlUsername ?? "")}" maxlength="256" autocomplete="off"><small>Пусто — использовать общий SQL-логин выше. При Windows-аутентификации DevRefresh укажите здесь SQL-логин для IBCMD.</small></div>
+          <div class="field"><label for="ibcmd-sql-password">Пароль отдельного SQL-пользователя</label><input id="ibcmd-sql-password" name="ibcmdSqlPassword" type="password" maxlength="1024" autocomplete="new-password" placeholder="${dt.sqlPasswordConfigured ? "Сохранён · оставьте пустым" : "Пароль SQL Server"}"></div>
+          <div class="field"><label for="ibcmd-timeout">Таймаут загрузки, минут</label><input id="ibcmd-timeout" name="ibcmdTimeoutMinutes" type="number" min="1" max="1440" value="${esc(dt.timeoutMinutes ?? 360)}"></div>
+        </div>
+        <p class="muted">Загрузка .dt полностью заменяет базу. IBCMD получает разрешение завершить сеансы; требуется монопольный доступ 1С. Для базы в обычном кластере на время загрузки остановите фоновые задания и новые подключения.</p>
+        <button type="button" class="button" data-action="test-ibcmd">Проверить IBCMD</button>
         <hr class="divider"><h3>После актуализации</h3>
         <label class="checkbox"><input name="runDbccCheckDb" type="checkbox" ${value.runDbccCheckDb ? "checked" : ""}><span>Проверять целостность SQL-базы (DBCC CHECKDB)<small>Выполняется в конце актуализации. Настройка применяется к новым заданиям.</small></span></label>
         <div class="form-actions"><button type="button" class="button" data-action="test-connection">Проверить подключение</button><button type="submit" class="button primary">Сохранить настройки</button></div>
@@ -192,7 +207,7 @@ function settingsPage() {
         <label class="checkbox"><input id="windows-auto-sign-in" name="windowsAutoSignIn" type="checkbox" ${settings.windowsAuthentication.autoSignIn ? "checked" : ""} ${!settings.windowsAuthentication.enabled ? "disabled" : ""}><span>Автоматически входить через домен с главной страницы</span></label>
         <p class="muted">Изменения применяются сразу. На домашнем компьютере оставьте корпоративный вход выключенным. Обычная форма входа доступна по /login.</p><div class="form-grid">
         <div class="field full"><label for="windows-admins">Доменные администраторы</label><textarea id="windows-admins" name="windowsAdmins" placeholder="DOMAIN\\demo_owner">${esc(settings.windowsAdmins.join("\n"))}</textarea><small>По одной учётной записи DOMAIN\\user в строке. Совпадение проверяется целиком; маски не поддерживаются.</small></div>
-        <div class="field full"><label for="test-contour-operators">Обновление тестового контура (_tk)</label><textarea id="test-contour-operators" name="testContourOperators" placeholder="DOMAIN\\test_operator">${esc((settings.testContourOperators ?? []).join("\n"))}</textarea><small>Общий список для всех баз с окончанием _tk, например uho_ke_tk. По одной AD-учётке DOMAIN\\user в строке. Эти пользователи могут обновлять тестовый контур из соответствующего Full- или Shrink-бэкапа. Администраторы сохраняют полный доступ.</small></div>
+        <div class="field full"><label for="test-contour-operators">Обновление тестового контура (_tk)</label><textarea id="test-contour-operators" name="testContourOperators" placeholder="DOMAIN\\test_operator">${esc((settings.testContourOperators ?? []).join("\n"))}</textarea><small>Общий список для всех баз с окончанием _tk, например uho_ke_tk. По одной AD-учётке DOMAIN\\user в строке. Эти пользователи могут обновлять тестовый контур из соответствующего Full-, Shrink- или .dt-архива. Администраторы сохраняют полный доступ.</small></div>
         <div class="field"><label for="local-username">Локальный администратор</label><input id="local-username" value="${esc(settings.localUsername)}" readonly></div>
         <div class="field"><label for="new-password">Новый пароль <span class="muted">· необязательно</span></label><input id="new-password" name="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password"><small>Оставьте пустым, чтобы сохранить текущий пароль.</small></div>
       </div><div class="form-actions"><button class="button primary" type="submit">Сохранить доступ</button></div><div class="form-result" role="status"></div></form></div></section>
@@ -270,7 +285,15 @@ function settingsInput(form) {
     copyBackupDirectory: form.elements.copyBackupDirectory.value,
     sqlCopyBackupDirectory: form.elements.sqlCopyBackupDirectory.value,
     trustServerCertificate: form.elements.trustServerCertificate.checked,
-    runDbccCheckDb: form.elements.runDbccCheckDb.checked
+    runDbccCheckDb: form.elements.runDbccCheckDb.checked,
+    dtRestore: form.elements.dtEnabled ? {
+      enabled: form.elements.dtEnabled.checked, backupDirectory: form.elements.dtBackupDirectory.value,
+      ibcmdDirectory: form.elements.ibcmdDirectory.value, workingDirectory: form.elements.ibcmdWorkingDirectory.value,
+      infobaseUser: form.elements.ibcmdInfobaseUser.value, infobasePassword: form.elements.ibcmdInfobasePassword.value || null,
+      clearInfobasePassword: form.elements.ibcmdClearInfobasePassword.checked,
+      sqlUsername: form.elements.ibcmdSqlUsername.value, sqlPassword: form.elements.ibcmdSqlPassword.value || null,
+      timeoutMinutes: form.elements.ibcmdTimeoutMinutes.valueAsNumber
+    } : null
   };
 }
 
@@ -375,6 +398,15 @@ document.addEventListener("click", async event => {
         result(form, "Проверяем подключение…");
         const value = await api("/api/admin/connection/test", { method: "POST", body: JSON.stringify(settingsInput(form)) });
         result(form, `Соединение установлено: ${value.serverName}\nSQL Server ${value.version} · ${value.edition}\nПараметры не сохранены. Нажмите «Сохранить настройки», чтобы применить их.`);
+      });
+    }
+    if (button.dataset.action === "test-ibcmd") {
+      const form = button.closest("form");
+      if (!form.reportValidity()) return;
+      await busy(form, async () => {
+        result(form, "Проверяем запуск IBCMD…");
+        const value = await api("/api/admin/ibcmd/test", { method: "POST", body: JSON.stringify(settingsInput(form)) });
+        result(form, `IBCMD ${value.version} запускается. Проверка не загружала .dt и не проверяла вход в базу. Сохраните настройки, чтобы применить их.`);
       });
     }
   } catch (error) { toast(error.message); }

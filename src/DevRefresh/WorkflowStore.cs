@@ -179,6 +179,7 @@ public sealed partial class Store
               AND julianday(updated_at)<=julianday($started)
               AND CASE WHEN json_valid(request) THEN json_extract(request,'$.Shrink') END=$shrink
               AND COALESCE(json_extract(request,'$.UsePreparedShrink'),0)=$prepared
+              AND COALESCE(json_extract(request,'$.UseDt'),0)=$dt
               AND (CASE WHEN json_valid(request) THEN json_extract(request,'$.SourceDatabase') END IS NOT NULL)=$databaseCopy
               AND duration_ms>0
             ORDER BY updated_at DESC, created_at DESC
@@ -192,6 +193,7 @@ public sealed partial class Store
         var started = cmd.Parameters.AddWithValue("$started","");
         var shrink = cmd.Parameters.AddWithValue("$shrink",0);
         var prepared = cmd.Parameters.AddWithValue("$prepared",0);
+        var dt = cmd.Parameters.AddWithValue("$dt",0);
         var databaseCopy = cmd.Parameters.AddWithValue("$databaseCopy",0);
         foreach (var job in running)
         {
@@ -204,6 +206,7 @@ public sealed partial class Store
             started.Value = job.StartedAt!.Value.ToString("O");
             shrink.Value = job.Request.Shrink ? 1 : 0;
             prepared.Value = job.Request.UsePreparedShrink ? 1 : 0;
+            dt.Value = job.Request.UseDt ? 1 : 0;
             databaseCopy.Value = job.Request.SourceDatabase is null ? 0 : 1;
             var durations = new List<long>();
             using var reader = cmd.ExecuteReader();

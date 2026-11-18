@@ -5,7 +5,7 @@ using Microsoft.Data.SqlClient;
 
 namespace DevRefresh;
 
-public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer analyzer,ReductionExecutor executor,
+public sealed partial class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer analyzer,ReductionExecutor executor,IbcmdRestore ibcmd,
     IWebHostEnvironment environment,IConfiguration configuration,ILogger<WorkflowService> logger):BackgroundService
 {
     private readonly Channel<bool> queueSignal=Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
@@ -297,6 +297,7 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
             LiveProgress(text);
         }
         var settings=job.Request.Settings;
+        if(job.Request.UseDt)return await RunDt(job,timing,Progress,token);
         if (job.Kind=="shrink-build")
             return await BuildShrinkBackup(job,timing,Progress,LiveProgress,token);
         if(job.Request.SourceDatabase is { } sourceDatabase)

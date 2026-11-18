@@ -10,12 +10,12 @@ public sealed record SqlSettings(string Server, string Authentication, string Us
     string ProtectedPassword, string BackupDirectory, string SqlBackupDirectory,
     bool TrustServerCertificate, bool RunDbccCheckDb = true,
     string ShrinkBackupDirectory = "", string SqlShrinkBackupDirectory = "",
-    string CopyBackupDirectory = "", string SqlCopyBackupDirectory = "");
+    string CopyBackupDirectory = "", string SqlCopyBackupDirectory = "", DtRestoreSettings? DtRestore = null);
 public sealed record SettingsInput(string Server, string Authentication, string Username,
     string? Password, string BackupDirectory, string SqlBackupDirectory,
     bool TrustServerCertificate, bool? RunDbccCheckDb = null,
     string? ShrinkBackupDirectory = null, string? SqlShrinkBackupDirectory = null,
-    string? CopyBackupDirectory = null, string? SqlCopyBackupDirectory = null);
+    string? CopyBackupDirectory = null, string? SqlCopyBackupDirectory = null, DtRestoreInput? DtRestore = null);
 public sealed record SetupInput(string Username, string Password, string[]? WindowsAdmins);
 public sealed record LoginInput(string Username, string Password);
 public sealed record SecurityInput(string[]? WindowsAdmins, string? NewPassword,
@@ -26,7 +26,7 @@ public sealed record DatabaseName(string SourceKey, string OwnerKey, bool IsTest
 public sealed record BackupFile(string Name, long Size, DateTimeOffset ModifiedAt, string SourceKey, DateOnly? BackupDate);
 public sealed record DatabaseEntry(string Name, string SourceKey, string OwnerKey,
     string State, BackupFile? Backup, long? SizeBytes = null, string? BackupSourceKey = null,
-    bool IsTestContour = false);
+    bool IsTestContour = false, BackupFile? DtBackup = null);
 public sealed record SqlDatabaseInfo(string Name, string State, long? SizeBytes = null, bool IsSnapshot = false);
 public sealed record AuditEntry(long Id, string At, string Actor, string Action, string Detail);
 public sealed record ConnectionResult(string ServerName, string Version, string Edition);
@@ -135,6 +135,7 @@ public static partial class Rules
         shrinkBackupDirectory = settings?.ShrinkBackupDirectory ?? "",
         sqlShrinkBackupDirectory = settings?.SqlShrinkBackupDirectory ?? "",
         copyBackupDirectory = settings?.CopyBackupDirectory ?? "",
-        sqlCopyBackupDirectory = settings?.SqlCopyBackupDirectory ?? ""
+        sqlCopyBackupDirectory = settings?.SqlCopyBackupDirectory ?? "",
+        dtRestore = DtRestoreConfiguration.Public(settings?.DtRestore)
     };
 }

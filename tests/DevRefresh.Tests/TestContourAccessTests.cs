@@ -162,14 +162,16 @@ public sealed class TestContourAccessTests
         Assert.True(reopened.CanRefreshTestContour("admin",configuration));
     }
 
-    [Fact]
-    public async Task RevokedQueuedRefreshFailsBeforeDoingDatabaseWork()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RevokedQueuedRefreshFailsBeforeDoingDatabaseWork(bool dt)
     {
         using var app=new Factory{SqlGateway=new Gateway()};using var admin=await Prepare(app);
         Assert.Equal(HttpStatusCode.OK,(await Access(admin,["CORP\\alice"])).StatusCode);
         var store=app.Services.GetRequiredService<Store>();
         var job=store.CreateJob("refresh","CORP\\alice","uho_ke","uho_ke_tk",
-            new(store.GetSettings()!,"",null,[],false,true,ResolveLatestBackup:true));
+            new(store.GetSettings()!,"",null,[],false,true,ResolveLatestBackup:true,UseDt:dt));
         Assert.Equal(HttpStatusCode.OK,(await Access(admin,[])).StatusCode);
         app.Services.GetRequiredService<IConfiguration>()["Workflows:Execute"]="true";
         using var worker=ActivatorUtilities.CreateInstance<WorkflowService>(app.Services);

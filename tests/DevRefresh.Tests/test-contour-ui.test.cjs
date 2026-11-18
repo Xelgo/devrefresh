@@ -64,3 +64,23 @@ test('database list identifies shared test contour and keeps developer owner lab
   assert.match(content.innerHTML,/<small>Тестовый контур<\/small>/);
   assert.match(content.innerHTML,/<small>alice<\/small>/);
 });
+
+test('settings exposes DT catalogs, IBCMD location, credentials, timeout and a harmless probe',()=>{
+  const {ctx,content}=context();
+  vm.runInContext(`state.settings.connection.dtRestore={enabled:true,backupDirectory:'D:\\\\dt',
+    ibcmdDirectory:'C:\\\\1cv8\\\\bin',workingDirectory:'',infobaseUser:'Administrator',
+    infobasePasswordConfigured:true,sqlUsername:'',sqlPasswordConfigured:false,timeoutMinutes:240};settingsPage()`,ctx);
+  for(const name of ['dtEnabled','dtBackupDirectory','ibcmdDirectory','ibcmdWorkingDirectory',
+    'ibcmdInfobaseUser','ibcmdInfobasePassword','ibcmdClearInfobasePassword','ibcmdSqlUsername','ibcmdSqlPassword','ibcmdTimeoutMinutes'])
+    assert.match(content.innerHTML,new RegExp(`name="${name}"`));
+  assert.match(content.innerHTML,/data-action="test-ibcmd"/);
+  assert.match(content.innerHTML,/name="ibcmdTimeoutMinutes"[^>]*value="240"/);
+});
+
+test('database list displays a DT archive when no BAK is available',()=>{
+  const {ctx,content}=context();
+  vm.runInContext(`state.databases={configured:true,databases:[{name:'uho_ke_tk',sourceKey:'uho_ke',ownerKey:'',
+    state:'ONLINE',isTestContour:true,dtBackup:{name:'uho_ke.dt',modifiedAt:'2026-11-18T12:00:00Z',size:123}}]};databasePage()`,ctx);
+  assert.match(content.innerHTML,/uho_ke\.dt/);assert.match(content.innerHTML,/\.dt \/ IBCMD/);
+  assert.doesNotMatch(content.innerHTML,/Файл не найден/);
+});
