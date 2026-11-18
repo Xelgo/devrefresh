@@ -57,6 +57,7 @@ public sealed class TestConnection : IStartupFilter
 public sealed class Factory : WebApplicationFactory<Program>
 {
     public bool WindowsEnabled { get; init; } = true;
+    public ISqlGateway? SqlGateway { get; init; }
     private static readonly string TestRoot = Path.Combine(Path.GetTempPath(), "DevRefreshTests");
     public string DirectoryPath { get; } = Path.Combine(TestRoot, Guid.NewGuid().ToString("N"));
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -69,7 +70,7 @@ public sealed class Factory : WebApplicationFactory<Program>
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<ISqlGateway>();
-            services.AddSingleton<ISqlGateway, TestSqlGateway>();
+            services.AddSingleton<ISqlGateway>(SqlGateway ?? new TestSqlGateway());
             services.AddSingleton<IStartupFilter, TestConnection>();
         });
     }

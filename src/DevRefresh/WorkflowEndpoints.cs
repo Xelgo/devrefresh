@@ -226,9 +226,9 @@ public static class WorkflowEndpoints
     private static DatabaseName Authorize(string database,AppUser user,IConfiguration configuration)
     {
         var parsed=Rules.ParseDatabase(database);
-        if(parsed is null||!user.IsAdmin&&parsed.OwnerKey!=user.OwnerKey)throw new InputException("База недоступна для вашей учётной записи.");
+        if(!Rules.CanAccessDatabase(parsed,user))throw new InputException("База недоступна для вашей учётной записи.");
         var allowed=configuration.GetSection("TestContour:AllowedTargets").Get<string[]>();
         if(allowed is {Length:>0}&&!allowed.Contains(database,StringComparer.OrdinalIgnoreCase))throw new InputException("В тестовом контуре эта база не разрешена как назначение.");
-        return parsed;
+        return parsed!;
     }
 }

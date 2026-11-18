@@ -198,8 +198,8 @@ public sealed partial class Store
             kind.Value = job.Kind;
             source.Value = job.SourceKey;
             target.Value = (object?)job.Target ?? DBNull.Value;
-            var canReadTargetHistory = job.Target is not null && user.OwnerKey is not null
-                && Rules.ParseDatabase(job.Target)?.OwnerKey == user.OwnerKey;
+            var canReadTargetHistory = job.Target is not null
+                && Rules.CanAccessDatabase(Rules.ParseDatabase(job.Target),user);
             shared.Value = user.IsAdmin || canReadTargetHistory ? 1 : 0;
             started.Value = job.StartedAt!.Value.ToString("O");
             shrink.Value = job.Request.Shrink ? 1 : 0;

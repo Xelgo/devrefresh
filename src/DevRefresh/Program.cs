@@ -286,6 +286,7 @@ app.MapGet("/api/admin/settings", (Store store) => Results.Ok(new
     connection = Rules.PublicSettings(store.GetSettings()),
     windowsAdmins = store.GetWindowsAdmins(),
     windowsAuthentication = store.GetWindowsAccess(app.Configuration),
+    testContourOperators = store.GetWindowsAccess(app.Configuration).TestContourOperators ?? [],
     logRetentionDays = store.GetLogRetentionDays(),
     localUsername = store.GetAdmin()!.Username
 }));
@@ -345,7 +346,9 @@ app.MapPut("/api/admin/security", async (SecurityInput input, HttpContext contex
         replacement = previous with { PasswordHash = hasher.HashPassword(previous, input.NewPassword), Version = Guid.NewGuid().ToString("N") };
     }
     var currentAccess=store.GetWindowsAccess(app.Configuration);
-    var access=new WindowsAccess(input.WindowsEnabled??currentAccess.Enabled,input.WindowsAutoSignIn??currentAccess.AutoSignIn);
+    var testContourOperators=Rules.ValidateWindowsAdmins(input.TestContourOperators??currentAccess.TestContourOperators);
+    var access=new WindowsAccess(input.WindowsEnabled??currentAccess.Enabled,input.WindowsAutoSignIn??currentAccess.AutoSignIn,
+        testContourOperators);
     if(!access.Enabled)access=access with{AutoSignIn=false};
     store.SaveSecurity(accounts, replacement, user.Name, access);
     if (replacement is not null && user.Kind == "local")
@@ -361,7 +364,7 @@ app.MapGet("/api/databases", async (HttpContext context, Store store, SessionSer
     if (settings is null) return Results.Ok(new { configured = false, databases = Array.Empty<DatabaseEntry>(), backupError = (string?)null });
     var databases = await sql.List(settings, token);
     var visible = databases.Select(x => (Database: x, Parsed: Rules.ParseDatabase(x.Name)))
-        .Where(x => x.Parsed is not null && (user.IsAdmin || x.Parsed.OwnerKey == user.OwnerKey)).ToArray();
+        .Where(x => Rules.CanAccessDatabase(x.Parsed, user)).ToArray();
     var (backups, backupError) = BackupCatalog.Scan(settings.BackupDirectory);
     var backupsBySource = backups.ToLookup(backup => backup.SourceKey);
     var aliases = store.GetBackupAliases();
@@ -370,7 +373,7 @@ app.MapGet("/api/databases", async (HttpContext context, Store store, SessionSer
         var parsed = x.Parsed!;
         var backupSource = aliases.GetValueOrDefault(parsed.SourceKey, parsed.SourceKey);
         return new DatabaseEntry(x.Database.Name, parsed.SourceKey, parsed.OwnerKey, x.Database.State,
-            backupsBySource[backupSource].FirstOrDefault(), x.Database.SizeBytes, backupSource);
+            backupsBySource[backupSource].FirstOrDefault(), x.Database.SizeBytes, backupSource, parsed.IsTestContour);
     }).ToArray();
     return Results.Ok(new { configured = true, databases = entries, backupError });
 });

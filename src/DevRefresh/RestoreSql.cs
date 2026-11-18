@@ -95,7 +95,7 @@ public sealed class RestoreSql(SettingsService settings)
         // MULTI_USER is an ALTER DATABASE option, never a RESTORE option.
         var restore=$"RESTORE DATABASE {Q(database)} FROM DISK={L(backup)} WITH {string.Join(",",moves)},RECOVERY,RESTRICTED_USER{(replace?",REPLACE":"")}{checksum}";
         if(replace)restore=$"ALTER DATABASE {Q(database)} SET SINGLE_USER"+(disconnect?" WITH ROLLBACK IMMEDIATE":" WITH NO_WAIT")+"; "+restore;
-        progress?.Invoke(replace ? "Восстановление бэкапа непосредственно в базу разработчика" : "Восстановление временной базы для анализа");
+        progress?.Invoke(replace ? "Восстановление бэкапа непосредственно в целевую базу" : "Восстановление временной базы для анализа");
         if (replace) replacing?.Invoke();
         await Execute(cn,restore,token);
         if (replace)

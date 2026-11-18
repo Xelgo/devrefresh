@@ -73,7 +73,9 @@ public static class WorkflowRules
     internal const string ObjectVersionsRegister = "РегистрСведений.ВерсииОбъектов";
 
     public static bool IsCopySource(string source,string target,string sourceKey) =>
-        !source.Equals(target,StringComparison.OrdinalIgnoreCase) && Rules.ParseDatabase(source)?.SourceKey==sourceKey;
+        !source.Equals(target,StringComparison.OrdinalIgnoreCase)
+        && Rules.ParseDatabase(target) is {IsTestContour:false}
+        && Rules.ParseDatabase(source) is {IsTestContour:false} parsed && parsed.SourceKey==sourceKey;
 
     public static (string SourceKey, DateOnly? BackupDate)? ParseBackupName(string filename)
     {
@@ -126,6 +128,12 @@ public static class WorkflowRules
         var value=DateOnly.ParseExact(date,"yyyy-MM-dd");
         return new(value.Year+yearOffset,value.Month,value.Day,0,0,0,DateTimeKind.Unspecified);
     }
-    public static bool CanRead(WorkflowJob job,AppUser user)=>user.IsAdmin || job.Kind=="refresh" &&
-        (job.Actor==user.Name || job.Target is not null && Rules.ParseDatabase(job.Target)?.OwnerKey==user.OwnerKey);
+    public static bool CanRead(WorkflowJob job,AppUser user)
+    {
+        if(user.IsAdmin)return true;
+        if(job.Kind!="refresh")return false;
+        var target=job.Target is null?null:Rules.ParseDatabase(job.Target);
+        if(target is {IsTestContour:true})return Rules.CanAccessDatabase(target,user);
+        return job.Actor==user.Name || Rules.CanAccessDatabase(target,user);
+    }
 }

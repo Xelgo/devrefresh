@@ -25,7 +25,9 @@ public sealed class SessionService(Store store, IConfiguration configuration)
         if (kind == "domain")
         {
             if(!store.GetWindowsAccess(configuration).Enabled)return null;
-            return new(name, kind, store.GetWindowsAdmins().Contains(name, StringComparer.OrdinalIgnoreCase), Rules.OwnerFromIdentity(name));
+            return new(name, kind, store.GetWindowsAdmins().Contains(name, StringComparer.OrdinalIgnoreCase),
+                Rules.OwnerFromIdentity(name),
+                (store.GetWindowsAccess(configuration).TestContourOperators ?? []).Contains(name, StringComparer.OrdinalIgnoreCase));
         }
         return null;
     }

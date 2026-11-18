@@ -118,6 +118,9 @@ public sealed class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer
         var id = job.Id;
         try
         {
+            if(job.Kind=="refresh" && job.Target is not null && Rules.ParseDatabase(job.Target) is {IsTestContour:true}
+                && !store.CanRefreshTestContour(job.Actor,configuration))
+                throw new InputException("Доступ к обновлению тестового контура отозван. Задание не выполнено.");
             var result=await Run(job,timing,token);
             if (result.MaintenanceRequest is { } request)
             {

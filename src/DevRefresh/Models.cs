@@ -4,7 +4,8 @@ using System.Text.RegularExpressions;
 namespace DevRefresh;
 
 public sealed record LocalAdmin(string Username, string PasswordHash, string Version);
-public sealed record AppUser(string Name, string Kind, bool IsAdmin, string? OwnerKey);
+public sealed record AppUser(string Name, string Kind, bool IsAdmin, string? OwnerKey,
+    bool CanRefreshTestContour = false);
 public sealed record SqlSettings(string Server, string Authentication, string Username,
     string ProtectedPassword, string BackupDirectory, string SqlBackupDirectory,
     bool TrustServerCertificate, bool RunDbccCheckDb = true,
@@ -18,13 +19,14 @@ public sealed record SettingsInput(string Server, string Authentication, string 
 public sealed record SetupInput(string Username, string Password, string[]? WindowsAdmins);
 public sealed record LoginInput(string Username, string Password);
 public sealed record SecurityInput(string[]? WindowsAdmins, string? NewPassword,
-    bool? WindowsEnabled = null, bool? WindowsAutoSignIn = null);
-public sealed record WindowsAccess(bool Enabled, bool AutoSignIn);
+    bool? WindowsEnabled = null, bool? WindowsAutoSignIn = null, string[]? TestContourOperators = null);
+public sealed record WindowsAccess(bool Enabled, bool AutoSignIn, string[]? TestContourOperators = null);
 public sealed record LogRetentionInput(int Days);
-public sealed record DatabaseName(string SourceKey, string OwnerKey);
+public sealed record DatabaseName(string SourceKey, string OwnerKey, bool IsTestContour = false);
 public sealed record BackupFile(string Name, long Size, DateTimeOffset ModifiedAt, string SourceKey, DateOnly? BackupDate);
 public sealed record DatabaseEntry(string Name, string SourceKey, string OwnerKey,
-    string State, BackupFile? Backup, long? SizeBytes = null, string? BackupSourceKey = null);
+    string State, BackupFile? Backup, long? SizeBytes = null, string? BackupSourceKey = null,
+    bool IsTestContour = false);
 public sealed record SqlDatabaseInfo(string Name, string State, long? SizeBytes = null, bool IsSnapshot = false);
 public sealed record AuditEntry(long Id, string At, string Actor, string Action, string Detail);
 public sealed record ConnectionResult(string ServerName, string Version, string Edition);
@@ -49,6 +51,11 @@ public static partial class Rules
     {
         const string marker = "_dev_";
         var index = name.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0 && name.EndsWith("_tk", StringComparison.OrdinalIgnoreCase))
+        {
+            var testSource = name[..^3];
+            return KeyPattern().IsMatch(testSource) ? new(testSource.ToLowerInvariant(), "", true) : null;
+        }
         if (index < 1 || name.IndexOf(marker, index + marker.Length, StringComparison.OrdinalIgnoreCase) >= 0)
             return null;
         var source = name[..index];
@@ -71,11 +78,18 @@ public static partial class Rules
         return owner is not null && parsed is not null && owner == parsed.OwnerKey;
     }
 
+    public static bool CanAccessDatabase(DatabaseName? database, AppUser user) => database is not null &&
+        (user.IsAdmin || (database.IsTestContour
+            ? user.Kind == "domain" && user.CanRefreshTestContour
+            : database.OwnerKey == user.OwnerKey));
+
     public static string[] ValidateWindowsAdmins(string[]? names)
     {
+        if(names?.Any(x=>x is null)==true)
+            throw new InputException("Укажите точные учётные записи в формате DOMAIN\\user, по одной в строке.");
         var result = (names ?? []).Select(x => x.Trim()).Where(x => x.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        if (result.Length > 100 || result.Any(x => x.Length > 256 || !DomainPattern().IsMatch(x)))
+        if (result.Length > 100 || result.Any(x => x.Length > 256 || !DomainPattern().IsMatch(x) || x.Contains('*') || x.Contains('?')))
             throw new InputException("Укажите точные учётные записи в формате DOMAIN\\user, по одной в строке.");
         return result;
     }
