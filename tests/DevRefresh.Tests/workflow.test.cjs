@@ -183,3 +183,10 @@ test('DT submission retains the replacement confirmation and sends an explicit s
   assert.equal(request.dt,true);assert.equal(request.shrink,false);assert.equal(request.sourceDatabase,null);
   assert.equal(request.confirmReplace,true);assert.equal(request.confirmDisconnect,true);
 });
+
+test('job details show post-restore operation counts without account data',()=>{
+  const {ctx}=fixture([]);
+  ctx.number=String;
+  const markup=vm.runInContext('postRestoreResultsMarkup([{kind:"windows-domain",targetDomain:"CORP",changed:4,unchanged:2}])',ctx);
+  assert.match(markup,/Подмена домена → CORP: изменено 4, уже соответствовало 2/);
+});

@@ -159,7 +159,7 @@ public sealed class DtRestoreTests
     {
         using var app=new Factory();using var client=await Prepare(app);
         var path=Path.Combine(app.DirectoryPath,"devrefresh.sqlite");
-        Assert.Equal(11,DatabaseMigrator.ReadVersion(path));
+        Assert.Equal(DatabaseMigrator.LatestVersion,DatabaseMigrator.ReadVersion(path));
         Assert.Throws<InvalidOperationException>(()=>DatabaseMigrator.Ensure(path,DatabaseMigrator.Migrations.Take(10).ToArray()));
         var old=JsonSerializer.Deserialize<WorkflowRequest>("""{"Settings":{"Server":"s","Authentication":"windows","Username":"","ProtectedPassword":"","BackupDirectory":"C:\\bak","SqlBackupDirectory":"C:\\bak","TrustServerCertificate":false},"BackupName":"x.bak","Profile":null,"Rules":[],"Shrink":false,"ConfirmDisconnect":false}""")!;
         Assert.False(old.UseDt);

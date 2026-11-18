@@ -100,6 +100,7 @@ builder.Services.AddSingleton<ISqlGateway, SqlGateway>();
 builder.Services.AddSingleton<RestoreSql>();
 builder.Services.AddSingleton<IbcmdProcessRunner>();
 builder.Services.AddSingleton<IbcmdRestore>();
+builder.Services.AddSingleton<RestorePipelineExecutor>();
 builder.Services.AddSingleton<StructureAnalyzer>();
 builder.Services.AddSingleton<DevDatabaseAnalysis>();
 builder.Services.AddSingleton<ReductionExecutor>();
@@ -289,6 +290,7 @@ app.MapGet("/api/admin/settings", (Store store) => Results.Ok(new
     windowsAdmins = store.GetWindowsAdmins(),
     windowsAuthentication = store.GetWindowsAccess(app.Configuration),
     testContourOperators = store.GetWindowsAccess(app.Configuration).TestContourOperators ?? [],
+    restorePipelines = store.GetRestorePipelines(),
     logRetentionDays = store.GetLogRetentionDays(),
     localUsername = store.GetAdmin()!.Username
 }));
@@ -337,6 +339,13 @@ app.MapPost("/api/admin/connection/test", async (SettingsInput input, HttpContex
 });
 app.MapPost("/api/admin/ibcmd/test",async(SettingsInput input,SettingsService settings,IbcmdRestore ibcmd,CancellationToken token)=>
     Results.Ok(new {version=(await ibcmd.Probe(settings.Prepare(input),token)).ToString()}));
+app.MapPut("/api/admin/restore-pipelines",(RestorePipelineInput input,HttpContext context,Store store,SessionService sessions)=>
+    Results.Ok(store.SaveRestorePipeline(input,sessions.Current(context)!.Name)));
+app.MapDelete("/api/admin/restore-pipelines/{database}/{source}",(string database,string source,string server,HttpContext context,Store store,SessionService sessions)=>
+{
+    store.DeleteRestorePipeline(server,database,source,sessions.Current(context)!.Name);
+    return Results.Ok(new {ok=true});
+});
 app.MapPut("/api/admin/security", async (SecurityInput input, HttpContext context, Store store,
     SessionService sessions, IPasswordHasher<LocalAdmin> hasher) =>
 {

@@ -17,7 +17,7 @@ public sealed record RefreshInput(string Database,bool Shrink,bool Pii,string? P
 public sealed record ReductionEstimateInput(string Database,string ProfileRevision,ReductionRule[] Rules,string? SourceDatabase=null);
 public sealed record WorkflowRequest(SqlSettings Settings,string BackupName,ReductionProfile? Profile,
     ReductionRule[] Rules,bool Shrink,bool ConfirmDisconnect,string? SourceDatabase=null,
-    bool UsePreparedShrink=false,string? BuildSlot=null,bool ResolveLatestBackup=false,bool UseDt=false);
+    bool UsePreparedShrink=false,string? BuildSlot=null,bool ResolveLatestBackup=false,bool UseDt=false,RestorePipeline? Pipeline=null);
 public sealed record WorkflowJob(string Id,string Kind,string Actor,string? Target,string SourceKey,
     string Status,string Stage,string CreatedAt,string UpdatedAt,WorkflowRequest Request,
     string? Result,string? Error,string? ResourceName,string? PinnedBackup,DateTimeOffset? ScheduledAt=null,DateTimeOffset? StartedAt=null,

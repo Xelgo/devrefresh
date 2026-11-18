@@ -35,6 +35,7 @@ public sealed partial class WorkflowService
         if(!job.Request.ConfirmDisconnect && await sql.Sessions(settings,target,token)>0)
             throw new InputException("В базе есть соединения. Подтвердите их завершение.");
         var touched=false;var opened=false;
+        RestoreOperationResult[] operations=[];
         try
         {
             progress("Загрузка .dt через IBCMD");
@@ -46,11 +47,12 @@ public sealed partial class WorkflowService
             await using(var restored=await sql.Open(settings,target,token))
             {
                 await CaptureDeveloperSize(restored,target,"После загрузки .dt",timing,progress,token);
+                operations=await pipelineExecutor.Apply(restored,job.Request.Pipeline,progress,token);
                 await CheckDeveloperCopy(restored,target,settings,progress,token);
             }
             var result=new {Database=target,Backup=backup.Name,RestoreMode="dt",DtDataDate=backup.BackupDate,
                 IbcmdVersion=version.ToString(),Shrink=false,PersonalDataProcessed=false,
-                SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0};
+                SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0,PostRestoreOperations=operations};
             store.MarkDatabaseReady(job.Id,result);
             return new(result);
         }

@@ -140,6 +140,20 @@ async function loadDatabases() {
   if (state.page === "databases") databasePage();
 }
 
+const restoreSourceLabels = {full:"Full (.bak)",shrink:"Shrink (.bak)",dt:".dt / IBCMD",database:"Другая Dev-база"};
+function restorePipelinesMarkup(settings) {
+  const pipelines = settings.restorePipelines ?? [];
+  return `<section class="card"><div class="card-header"><div><h2>Операции после восстановления</h2><p>Правило для конкретной SQL-базы и конкретного источника. Выполняется до отметки «База готова».</p></div></div>
+    <div class="card-body"><form id="restore-pipeline-form"><div class="form-grid">
+      <div class="field full"><label for="pipeline-database">Точное имя SQL-базы</label><input id="pipeline-database" name="database" placeholder="bp_dev_demo_owner" maxlength="128" required><small>Правило привязывается к настроенному SQL Server: ${esc(settings.connection.server || "сначала сохраните подключение")}.</small></div>
+      <div class="field full"><label for="pipeline-source">Источник восстановления</label><select id="pipeline-source" name="sourceKind">${Object.entries(restoreSourceLabels).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></div>
+      <div class="field full"><label class="checkbox"><input id="pipeline-rewrite-domain" name="rewriteDomain" type="checkbox"><span>Подменять домен</span></label></div>
+      <div class="field full"><label for="pipeline-domain">Целевой домен</label><input id="pipeline-domain" name="targetDomain" value="CORP" maxlength="253" placeholder="CORP"><small>Например: \\\\CORP_TEST\\demo_owner → \\\\CORP\\demo_owner. Меняется только домен в v8users.OSName; имя учётной записи сохраняется.</small></div>
+      </div><div class="form-actions"><button class="button primary" type="submit">Сохранить правило</button></div><div class="form-result" role="status"></div></form>
+      <p class="muted">Для каждой пары «база + источник» сохраняется своё правило. Снятая галочка отключает подмену для этой пары. Роли, пароли и двоичные данные пользователей не изменяются. При совпадении будущих учёток или ошибке цепочка SQL-операций откатывается.</p>
+    </div>${pipelines.length ? `<div class="table-wrap"><table><thead><tr><th>База / сервер</th><th>Источник</th><th>Подмена домена</th><th></th></tr></thead><tbody>${pipelines.map((pipeline,index)=>`<tr><td>${esc(pipeline.database)}<small>${esc(pipeline.server)}</small></td><td>${esc(restoreSourceLabels[pipeline.sourceKind] ?? pipeline.sourceKind)}</td><td>${pipeline.operations.length ? esc(pipeline.operations[0].targetDomain) : "Выключено"}</td><td><button type="button" class="button" data-pipeline-edit="${index}">Изменить</button> <button type="button" class="button" data-pipeline-delete="${index}">Удалить</button></td></tr>`).join("")}</tbody></table></div>` : '<div class="empty"><p>Правила пока не назначены.</p></div>'}</section>`;
+}
+
 function settingsPage() {
   const settings = state.settings;
   const value = settings.connection;
@@ -201,6 +215,7 @@ function settingsPage() {
         <div class="form-actions"><button type="submit" class="button primary">Сохранить срок хранения</button></div>
         <div class="form-result" role="status"></div>
       </form></div></section>
+      ${restorePipelinesMarkup(settings)}
       <section class="card"><div class="card-header"><div><h2>Доступ и роли</h2><p>Локальный администратор, доменные администраторы и пользователи тестового контура.</p></div></div>
       <div class="card-body"><form id="security-form">
         <label class="checkbox"><input id="windows-enabled" name="windowsEnabled" type="checkbox" ${settings.windowsAuthentication.enabled ? "checked" : ""}><span>Включить корпоративный вход<small> · Windows / доменная учётная запись</small></span></label>
@@ -361,12 +376,33 @@ document.addEventListener("submit", async event => {
     await navigate(state.session.user.isAdmin ? "settings" : "databases");
     toast("Настройки доступа сохранены.");
   });
+  if (form.id === "restore-pipeline-form") return busy(form, async () => {
+    await api("/api/admin/restore-pipelines", {method:"PUT",body:JSON.stringify({
+      database:form.elements.database.value.trim(),sourceKind:form.elements.sourceKind.value,
+      rewriteDomain:form.elements.rewriteDomain.checked,targetDomain:form.elements.targetDomain.value.trim()})});
+    await navigate("settings");toast("Правило операций сохранено.");
+  });
 });
 
 document.addEventListener("click", async event => {
   const button = event.target.closest("button");
   if (!button) return;
   try {
+    if (button.dataset.pipelineEdit !== undefined) {
+      const pipeline=state.settings.restorePipelines[Number(button.dataset.pipelineEdit)];
+      if (pipeline.server.toLowerCase() !== state.settings.connection.server.toLowerCase()) throw new Error("Сначала выберите SQL Server, к которому относится правило.");
+      const form=document.querySelector("#restore-pipeline-form");
+      form.elements.database.value=pipeline.database;form.elements.sourceKind.value=pipeline.sourceKind;
+      form.elements.rewriteDomain.checked=pipeline.operations.length>0;
+      form.elements.targetDomain.value=pipeline.targetDomain ?? pipeline.operations[0]?.targetDomain ?? "CORP";
+      form.elements.targetDomain.required=form.elements.rewriteDomain.checked;form.elements.database.focus();
+    }
+    if (button.dataset.pipelineDelete !== undefined) {
+      const pipeline=state.settings.restorePipelines[Number(button.dataset.pipelineDelete)];
+      button.disabled=true;
+      try { await api(`/api/admin/restore-pipelines/${encodeURIComponent(pipeline.database)}/${encodeURIComponent(pipeline.sourceKind)}?server=${encodeURIComponent(pipeline.server)}`,{method:"DELETE"});await navigate("settings");toast("Правило удалено."); }
+      finally {button.disabled=false;}
+    }
     if (button.dataset.page) await navigate(button.dataset.page);
     if (button.dataset.inspect !== undefined) inspectDatabase(Number(button.dataset.inspect));
     if (button.dataset.action === "close-dialog") document.querySelector("#database-dialog").close();
@@ -412,6 +448,7 @@ document.addEventListener("click", async event => {
   } catch (error) { toast(error.message); }
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "pipeline-rewrite-domain") event.target.form.elements.targetDomain.required=event.target.checked;
   if (event.target.id === "authentication") updateAuthenticationFields();
   if (event.target.id === "windows-enabled") {
     const auto = document.querySelector("#windows-auto-sign-in");

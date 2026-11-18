@@ -7,7 +7,7 @@ public sealed record MigrationResult(int FromVersion, int ToVersion, string? Bac
 
 public static class DatabaseMigrator
 {
-    public const int LatestVersion = 11;
+    public const int LatestVersion = 12;
     public static IReadOnlyList<SchemaMigration> Migrations { get; } =
     [
         new(1, "Initial administration and settings", """
@@ -68,7 +68,11 @@ public static class DatabaseMigrator
             """),
         // Older workers ignore UseDt in persisted JSON and could select a .bak instead.
         // Advance the compatibility version even though the SQLite tables are unchanged.
-        new(11, "DT restore job format requires a compatible worker", "SELECT 1;")
+        new(11, "DT restore job format requires a compatible worker", "SELECT 1;"),
+        new(12, "Restore operation pipelines by server, database and archive type", """
+            CREATE TABLE restore_pipelines(server TEXT NOT NULL COLLATE NOCASE,database_name TEXT NOT NULL COLLATE NOCASE,
+                source_kind TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(server,database_name,source_kind));
+            """)
     ];
 
     public static SqliteConnection Connect(string path, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate)

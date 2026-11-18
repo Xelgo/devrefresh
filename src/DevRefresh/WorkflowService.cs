@@ -5,7 +5,7 @@ using Microsoft.Data.SqlClient;
 
 namespace DevRefresh;
 
-public sealed partial class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer analyzer,ReductionExecutor executor,IbcmdRestore ibcmd,
+public sealed partial class WorkflowService(Store store,RestoreSql sql,StructureAnalyzer analyzer,ReductionExecutor executor,IbcmdRestore ibcmd,RestorePipelineExecutor pipelineExecutor,
     IWebHostEnvironment environment,IConfiguration configuration,ILogger<WorkflowService> logger):BackgroundService
 {
     private readonly Channel<bool> queueSignal=Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
@@ -121,6 +121,8 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             if(job.Kind=="refresh" && job.Target is not null && Rules.ParseDatabase(job.Target) is {IsTestContour:true}
                 && !store.CanRefreshTestContour(job.Actor,configuration))
                 throw new InputException("Доступ к обновлению тестового контура отозван. Задание не выполнено.");
+            if(job.Kind=="refresh" && job.Target is {} target)
+                job=job with{Request=job.Request with{Pipeline=store.GetRestorePipeline(job.Request.Settings.Server,target,RestorePipelineRules.Source(job.Request))}};
             var result=await Run(job,timing,token);
             if (result.MaintenanceRequest is { } request)
             {
@@ -391,6 +393,7 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             throw new InputException("В базе есть соединения. Подтвердите их завершение.");
         var touched=false;
         var opened=false;
+        RestoreOperationResult[] operations=[];
         Exception? failure=null;
         try
         {
@@ -400,6 +403,7 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             await using (var restored=await sql.Open(settings,target,token))
             {
                 await CaptureDeveloperSize(restored,target,"После восстановления",timing,progress,token);
+                operations=await pipelineExecutor.Apply(restored,job.Request.Pipeline,progress,token);
                 await CheckDeveloperCopy(restored,target,settings,progress,token);
             }
             progress("Возврат базы в многопользовательский режим");
@@ -408,7 +412,7 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             var result=new {Database=target,Backup=job.Request.BackupName,job.Request.SourceDatabase,Shrink=job.Request.UsePreparedShrink,
                 ShrinkDataDate=ready?.DataDate,PersonalDataProcessed=false,
                 RestoreMode=job.Request.SourceDatabase is not null?"copy":job.Request.UsePreparedShrink?"prepared-shrink":"direct",
-                SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0};
+                SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0,PostRestoreOperations=operations};
             store.MarkDatabaseReady(job.Id,result);
             return new(result,job.Request.UsePreparedShrink?null:job.Request);
         }
