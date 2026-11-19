@@ -177,6 +177,34 @@ public sealed class MigrationTests : IDisposable
         Assert.Equal(1, DatabaseMigrator.ReadVersion(Database));
         Assert.False(Directory.Exists(Path.Combine(fixture.Target, "backups")));
     }
+    [Theory]
+    [InlineData("MCP-OAUTH.md",true)]
+    [InlineData("unexpected-root-file.txt",false)]
+    [InlineData("config/credentials.json",false)]
+    public void UpdateAcceptsTheMcpGuideAndStillRejectsUnapprovedPayloadFiles(string relative,bool allowed)
+    {
+        var fixture=UpdateFixture();
+        var file=Path.Combine(fixture.Package,relative);Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.WriteAllText(file,"Synthetic package documentation fixture");
+        var manifestPath=Path.Combine(fixture.Package,"BUILD-INFO.json");
+        var manifest=JsonSerializer.Deserialize<PackageManifest>(File.ReadAllText(manifestPath))!;
+        manifest.Files![relative]=Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file)));
+        File.WriteAllText(manifestPath,JsonSerializer.Serialize(manifest));
+        if(allowed)
+        {
+            Assert.Equal(manifest.Version,UpdateEngine.ValidatePackage(fixture.Package).Version);
+            var result=UpdateEngine.Apply(fixture.Package,fixture.Target,fixture.Data);
+            Assert.Equal("installed-awaiting-start",result.State);
+            Assert.Equal(File.ReadAllText(file),File.ReadAllText(Path.Combine(fixture.Target,relative)));
+        }
+        else
+        {
+            Assert.Contains(relative,Assert.Throws<InvalidOperationException>(()=>UpdateEngine.ValidatePackage(fixture.Package)).Message);
+            Assert.Throws<InvalidOperationException>(()=>UpdateEngine.Apply(fixture.Package,fixture.Target,fixture.Data));
+            Assert.False(Directory.Exists(Path.Combine(fixture.Target,"backups")));
+            Assert.Equal("old executable placeholder",File.ReadAllText(Path.Combine(fixture.Target,"app","DevRefresh.exe")));
+        }
+    }
     public void Dispose()
     {
         var allowed = Path.Combine(Path.GetTempPath(), "DevRefreshMigrationTests") + Path.DirectorySeparatorChar;

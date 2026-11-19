@@ -99,6 +99,10 @@ try {
         throw 'The package does not match the GitHub release.'
     }
 
+    # Validate the full payload with the incoming updater before stopping a working service.
+    & (Join-Path $package 'app\DevRefresh.exe') --Maintenance verify-package --PackageRoot $package --contentRoot (Join-Path $package 'app')
+    if($LASTEXITCODE-ne 0){throw 'Package payload verification failed; the installed service was not stopped.'}
+
     if (-not $Yes -and (Read-Host "Install $($release.tag_name)? Running DevRefresh jobs can be interrupted. Type UPDATE to continue") -cne 'UPDATE') {
         Write-Output 'Update cancelled.'
         exit 0

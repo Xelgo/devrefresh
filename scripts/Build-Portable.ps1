@@ -51,6 +51,8 @@ if ($Kind -in @('Update','Both')) {
     $taskPackages += $taskUpdatePackage
 }
 foreach ($taskReadyPackage in $taskPackages) {
+    & (Join-Path $taskReadyPackage 'app\DevRefresh.exe') --Maintenance verify-package --PackageRoot $taskReadyPackage --contentRoot (Join-Path $taskReadyPackage 'app')
+    if($LASTEXITCODE-ne 0){throw "Package payload validation failed: $taskReadyPackage"}
     $taskArchive = $taskReadyPackage + '.zip'
     Compress-Archive -Path (Join-Path $taskReadyPackage '*') -DestinationPath $taskArchive -CompressionLevel Optimal
     $taskHash = (Get-FileHash -LiteralPath $taskArchive -Algorithm SHA256).Hash

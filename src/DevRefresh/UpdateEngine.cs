@@ -13,7 +13,7 @@ public sealed record UpdateResult(string Version, string BackupDirectory, string
 public static class UpdateEngine
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true, WriteIndented = true };
-    private static readonly string[] RootFiles = ["START.cmd", "STARTSERVICE.cmd", "STOPSERVICE.cmd", "CHECK.cmd", "COLLECT-LOGS.cmd", "SETUP-HTTPS.cmd", "UPDATE.cmd", "UPDATE-ONLINE.cmd", "ROLLBACK.cmd", "README.md", "BUILD-INFO.json"];
+    private static readonly string[] RootFiles = ["START.cmd", "STARTSERVICE.cmd", "STOPSERVICE.cmd", "CHECK.cmd", "COLLECT-LOGS.cmd", "SETUP-HTTPS.cmd", "UPDATE.cmd", "UPDATE-ONLINE.cmd", "ROLLBACK.cmd", "README.md", "MCP-OAUTH.md", "BUILD-INFO.json"];
 
     public static UpdateResult Apply(string packageRoot, string targetRoot, string dataDirectory)
     {
@@ -25,18 +25,7 @@ public static class UpdateEngine
             || SamePath(dataDirectory, targetApp))
             throw new InvalidOperationException("Служебные данные должны находиться вне app. Сначала перенесите их в постоянную папку и задайте DataDirectory.");
         EnsureStopped(targetApp);
-        var manifest = JsonSerializer.Deserialize<PackageManifest>(File.ReadAllText(Inside(packageRoot, "BUILD-INFO.json")), Json)
-            ?? throw new InvalidOperationException("Нет манифеста пакета.");
-        if (manifest.Product != "DevRefresh" || manifest.SchemaVersion != DatabaseMigrator.LatestVersion || manifest.Files is null)
-            throw new InvalidOperationException("Пакет не содержит совместимого манифеста обновления.");
-        foreach (var (relative, expected) in manifest.Files)
-        {
-            var file = Inside(packageRoot, relative);
-            if (!AllowedPayload(relative) || !File.Exists(file)) throw new InvalidOperationException("Недопустимый файл в пакете обновления.");
-            using var stream = File.OpenRead(file);
-            if (!Convert.ToHexString(SHA256.HashData(stream)).Equals(expected, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"Нарушена контрольная сумма файла {relative}.");
-        }
+        var manifest = ValidatePackage(packageRoot);
         var previousVersion = FileVersionInfo.GetVersionInfo(Inside(targetRoot, "app/DevRefresh.exe")).FileVersion ?? "0.0.0";
         if (NormalizeVersion(previousVersion) >= NormalizeVersion(manifest.Version))
             throw new InvalidOperationException($"Установлена версия {previousVersion}; пакет {manifest.Version} не является более новым.");
@@ -53,7 +42,7 @@ public static class UpdateEngine
             access.SetAccessRuleProtection(true,true);
             new DirectoryInfo(backup).SetAccessControl(access);
         }
-        var rootPayload = manifest.Files.Keys.Where(x => !x.StartsWith("app/", StringComparison.Ordinal)).Append("BUILD-INFO.json").Distinct().ToArray();
+        var rootPayload = manifest.Files!.Keys.Where(x => !x.StartsWith("app/", StringComparison.Ordinal)).Append("BUILD-INFO.json").Distinct().ToArray();
         var oldFiles = rootPayload.Append("config/server.json").ToDictionary(x => x, x => File.Exists(Inside(targetRoot, x)));
         var receipt = new UpdateReceipt(targetRoot, dataDirectory, previousVersion, manifest.Version, "preparing", oldFiles);
         DatabaseMigrator.Backup(database, Inside(backup, "database.sqlite"));
@@ -160,6 +149,25 @@ public static class UpdateEngine
 
     private static bool AllowedPayload(string path) => !path.Contains('\\') && !path.Contains("..", StringComparison.Ordinal)
         && (path.StartsWith("app/", StringComparison.Ordinal) || path.StartsWith("scripts/", StringComparison.Ordinal) || RootFiles.Contains(path));
+
+    public static PackageManifest ValidatePackage(string packageRoot)
+    {
+        packageRoot=Path.GetFullPath(packageRoot);
+        var manifest=JsonSerializer.Deserialize<PackageManifest>(File.ReadAllText(Inside(packageRoot,"BUILD-INFO.json")),Json)
+            ??throw new InvalidOperationException("Нет манифеста пакета.");
+        if(manifest.Product!="DevRefresh"||manifest.SchemaVersion!=DatabaseMigrator.LatestVersion||manifest.Files is null
+            ||!manifest.Files.ContainsKey("app/DevRefresh.exe"))
+            throw new InvalidOperationException("Пакет не содержит совместимого манифеста обновления.");
+        foreach(var (relative,expected) in manifest.Files)
+        {
+            var file=Inside(packageRoot,relative);
+            if(!AllowedPayload(relative)||!File.Exists(file))throw new InvalidOperationException($"Недопустимый файл в пакете обновления: {relative}.");
+            using var stream=File.OpenRead(file);
+            if(!Convert.ToHexString(SHA256.HashData(stream)).Equals(expected,StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Нарушена контрольная сумма файла {relative}.");
+        }
+        return manifest;
+    }
     private static bool SamePath(string a, string b) => Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar)
         .Equals(Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
     public static string Inside(string root, string relative)

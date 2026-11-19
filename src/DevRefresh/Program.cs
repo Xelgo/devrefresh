@@ -44,6 +44,12 @@ if (builder.Configuration["Maintenance"] is { } maintenance)
             using var maintenanceLock=RuntimeDataLock.Acquire(dataPath);
             result=ServiceKeyPreparation.Prepare(dataPath);
         }
+        else if(maintenance=="verify-package")
+        {
+            var packageRoot=builder.Configuration["PackageRoot"]??Path.GetFullPath(Path.Combine(publishedRoot??AppContext.BaseDirectory,".."));
+            var package=UpdateEngine.ValidatePackage(packageRoot);
+            result=new{package.Product,package.Version,package.SchemaVersion,Files=package.Files!.Count,Verified=true};
+        }
         else if (maintenance is "update" or "rollback")
         {
             var packageRoot = Path.GetFullPath(Path.Combine(publishedRoot ?? AppContext.BaseDirectory, ".."));
