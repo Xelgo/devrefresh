@@ -32,12 +32,15 @@ public sealed class SessionService(Store store, IConfiguration configuration)
         return null;
     }
 
-    public static Task SignIn(HttpContext context, string name, string kind, string? version = null)
+    public static Task SignIn(HttpContext context, string name, string kind, string? version = null,string? sid=null)
     {
         var claims = new List<Claim> { new(ClaimTypes.Name, name), new("kind", kind) };
         if (version is not null) claims.Add(new("version", version));
+        if (sid is not null) claims.Add(new(ClaimTypes.PrimarySid,sid));
+        var principal=new ClaimsPrincipal(new ClaimsIdentity(claims,CookieAuthenticationDefaults.AuthenticationScheme));
+        context.User=principal;
         return context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme,
-            new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme)),
+            principal,
             new AuthenticationProperties { IsPersistent = false, ExpiresUtc = DateTimeOffset.UtcNow.AddHours(8) });
     }
 }

@@ -17,8 +17,10 @@ New-Item -ItemType Directory -Path $taskPackage | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Publish failed with exit code $LASTEXITCODE" }
 $taskTemplate = Join-Path $taskSourceRoot 'deploy\portable'
 Get-ChildItem -LiteralPath $taskTemplate -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $taskPackage -Recurse }
+$taskMcpGuide=[IO.File]::ReadAllText((Join-Path $taskSourceRoot 'docs\mcp-oauth.md')).Replace('../deploy/portable/README.md','README.md')
+[IO.File]::WriteAllText((Join-Path $taskPackage 'MCP-OAUTH.md'),$taskMcpGuide,[Text.UTF8Encoding]::new($false))
 $taskUnwanted = @(Get-ChildItem -LiteralPath $taskPackage -Recurse -Force | Where-Object {
-    $_.Name -in @('App_Data','data','keys') -or $_.Name -match '\.(sqlite|sqlite3|db|pfx|key)(-wal|-shm)?$'
+    $_.Name -in @('App_Data','data','keys','mcp-keys.protected') -or $_.Name -match '\.(sqlite|sqlite3|db|pfx|key)(-wal|-shm)?$'
 })
 if ($taskUnwanted.Count -gt 0) { throw 'Runtime data or secrets were found in the package. Packaging refused.' }
 $taskExe = Join-Path $taskPackage 'app\DevRefresh.exe'
@@ -33,7 +35,7 @@ Get-ChildItem -LiteralPath $taskPackage -Recurse -File | Where-Object { $_.FullN
     $taskFiles[$taskRelative] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
 }
 $taskBuild = [ordered]@{
-    product='DevRefresh'; version=[string]$taskVersion; schemaVersion=13; packageKind='install'; runtime='win-x64'; selfContained=$true
+    product='DevRefresh'; version=[string]$taskVersion; schemaVersion=14; packageKind='install'; runtime='win-x64'; selfContained=$true
     builtAtUtc=[DateTime]::UtcNow.ToString('O'); executableSha256=$taskFiles['app/DevRefresh.exe']; files=$taskFiles
 }
 $taskBuild | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $taskPackage 'BUILD-INFO.json') -Encoding UTF8

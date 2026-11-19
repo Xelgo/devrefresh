@@ -57,6 +57,10 @@ public static class UpdateEngine
         var oldFiles = rootPayload.Append("config/server.json").ToDictionary(x => x, x => File.Exists(Inside(targetRoot, x)));
         var receipt = new UpdateReceipt(targetRoot, dataDirectory, previousVersion, manifest.Version, "preparing", oldFiles);
         DatabaseMigrator.Backup(database, Inside(backup, "database.sqlite"));
+        var oauthDatabase=Path.Combine(dataDirectory,"mcp-oauth.sqlite");
+        if(File.Exists(oauthDatabase))DatabaseMigrator.Backup(oauthDatabase,Inside(backup,"mcp-oauth.sqlite"));
+        var oauthKeys=Path.Combine(dataDirectory,"mcp-keys.protected");
+        if(File.Exists(oauthKeys))CopyFile(oauthKeys,Inside(backup,"mcp-keys.protected"));
         if (Directory.Exists(Path.Combine(dataDirectory, "keys"))) CopyDirectory(Path.Combine(dataDirectory, "keys"), Inside(backup, "keys"));
         foreach (var (relative, existed) in oldFiles)
             if (existed) CopyFile(Inside(targetRoot, relative), Inside(backup, "files/" + relative));

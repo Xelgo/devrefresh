@@ -92,13 +92,31 @@ public sealed partial class Store
     }
 
     private WorkflowJob? CreateJobCore(string kind,string actor,string source,string? target,WorkflowRequest request,
-        DateTimeOffset? scheduledAt,ShrinkSchedule? schedule)
+        DateTimeOffset? scheduledAt,ShrinkSchedule? schedule,McpSubmission? mcp=null)
     {
         var now = DateTimeOffset.UtcNow;
         if (scheduledAt <= now) throw new InputException("Укажите дату и время запуска в будущем.");
         var id=Guid.NewGuid().ToString("N");var at=now.ToString("O");
         var scheduledUtc = scheduledAt?.ToUniversalTime().ToString("O");
         using var db=Open();using var tx=db.BeginTransaction(deferred:false);using var cmd=db.CreateCommand();cmd.Transaction=tx;
+        if(mcp is not null)
+        {
+            cmd.CommandText="SELECT job_id,expires_at FROM mcp_restore_plans WHERE id=$plan AND owner=$owner";
+            cmd.Parameters.AddWithValue("$plan",mcp.PlanId);cmd.Parameters.AddWithValue("$owner",mcp.Owner);
+            string? previous;string expiry;
+            using(var row=cmd.ExecuteReader())
+            {
+                if(!row.Read())throw new InputException("План не найден.");
+                previous=row.IsDBNull(0)?null:row.GetString(0);expiry=row.GetString(1);
+            }
+            if(previous is not null){tx.Rollback();return GetJob(previous)!;}
+            if(DateTimeOffset.Parse(expiry)<=now)throw new InputException("План истёк.");
+            cmd.Parameters.Clear();
+            cmd.CommandText="SELECT COUNT(*) FROM mcp_restore_plans WHERE owner=$owner AND request_id=$request AND id<>$plan";
+            cmd.Parameters.AddWithValue("$owner",mcp.Owner);cmd.Parameters.AddWithValue("$request",mcp.RequestId);cmd.Parameters.AddWithValue("$plan",mcp.PlanId);
+            if(Convert.ToInt32(cmd.ExecuteScalar())!=0)throw new InputException("Этот request_id уже использован для другого плана.");
+            cmd.Parameters.Clear();
+        }
         if (schedule is not null)
         {
             if (!TryAdvanceShrinkSlot(cmd, schedule, request.BuildSlot!)) return null;
@@ -146,6 +164,13 @@ public sealed partial class Store
         cmd.Parameters.AddWithValue("$request",JsonSerializer.Serialize(request));
         cmd.Parameters.AddWithValue("$scheduled",(object?)scheduledUtc??DBNull.Value);
         cmd.ExecuteNonQuery();
+        if(mcp is not null)
+        {
+            cmd.Parameters.Clear();cmd.CommandText="UPDATE mcp_restore_plans SET job_id=$job,request_id=$request WHERE id=$plan AND owner=$owner AND job_id IS NULL";
+            cmd.Parameters.AddWithValue("$job",id);cmd.Parameters.AddWithValue("$request",mcp.RequestId);
+            cmd.Parameters.AddWithValue("$plan",mcp.PlanId);cmd.Parameters.AddWithValue("$owner",mcp.Owner);
+            if(cmd.ExecuteNonQuery()!=1)throw new InputException("План уже использован.");
+        }
         var auditDetail = $"Задание {id}, тип {source}, база {target??"служебная копия"}.";
         if(request.SourceDatabase is not null) auditDetail+=$" Источник {request.SourceDatabase}.";
         if (scheduledUtc is not null) auditDetail += $" Запуск {scheduledUtc} (UTC).";

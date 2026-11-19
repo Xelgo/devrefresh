@@ -7,7 +7,7 @@ public sealed record MigrationResult(int FromVersion, int ToVersion, string? Bac
 
 public static class DatabaseMigrator
 {
-    public const int LatestVersion = 13;
+    public const int LatestVersion = 14;
     public static IReadOnlyList<SchemaMigration> Migrations { get; } =
     [
         new(1, "Initial administration and settings", """
@@ -80,6 +80,11 @@ public static class DatabaseMigrator
                 archive_format TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(server,source_type,archive_format));
             UPDATE settings SET value=json_remove(value,'$.DtRestore.InfobaseUser','$.DtRestore.ProtectedInfobasePassword') WHERE json_valid(value);
             UPDATE workflow_jobs SET request=json_remove(request,'$.Settings.DtRestore.InfobaseUser','$.Settings.DtRestore.ProtectedInfobasePassword','$.Pipeline') WHERE json_valid(request);
+            """),
+        new(14, "OAuth MCP restore plans and pinned source job format", """
+            CREATE TABLE mcp_restore_plans(id TEXT PRIMARY KEY,owner TEXT NOT NULL,expires_at TEXT NOT NULL,value TEXT NOT NULL,
+                job_id TEXT,request_id TEXT);
+            CREATE UNIQUE INDEX mcp_restore_requests ON mcp_restore_plans(owner,request_id) WHERE request_id IS NOT NULL;
             """)
     ];
 

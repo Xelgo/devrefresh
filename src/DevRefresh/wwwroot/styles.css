@@ -274,3 +274,7 @@ summary{cursor:pointer}
 }
 @media(max-width:480px){.stats{grid-template-columns:1fr}.stat{padding:20px 22px}.stat-label{min-height:0;margin-bottom:10px}.stat-value{font-size:27px;margin-bottom:7px}.stat-note{font-size:11px}.environment{gap:7px;font-size:10px}.identity-info{max-width:110px}.auth-aside h1{font-size:27px}.detail-row{flex-wrap:wrap}.dialog-actions .button{flex:1}.page-heading h1{font-size:21px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}}
+
+.oauth-consent { max-width: 720px; margin: 8vh auto; padding: 32px; background: var(--surface, white); border-radius: 16px; }
+.oauth-consent form { margin-top: 28px; }
+.oauth-consent .mono { overflow-wrap: anywhere; }

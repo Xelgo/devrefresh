@@ -127,6 +127,20 @@ public sealed class MigrationTests : IDisposable
         Assert.Equal(1, DatabaseMigrator.ReadVersion(Path.Combine(result.BackupDirectory, "database.sqlite")));
     }
     [Fact]
+    public void UpdateBacksUpOAuthStateWithoutChangingItsLiveRevocations()
+    {
+        var fixture=UpdateFixture();var oauth=Path.Combine(fixture.Data,"mcp-oauth.sqlite");
+        using(var db=DatabaseMigrator.Connect(oauth))
+        {
+            using var command=db.CreateCommand();command.CommandText="CREATE TABLE grants(state TEXT); INSERT INTO grants VALUES('revoked')";command.ExecuteNonQuery();
+        }
+        File.WriteAllText(Path.Combine(fixture.Data,"mcp-keys.protected"),"synthetic-protected-key-fixture");
+        var result=UpdateEngine.Apply(fixture.Package,fixture.Target,fixture.Data);
+        Assert.Equal("revoked",Scalar(Path.Combine(result.BackupDirectory,"mcp-oauth.sqlite"),"SELECT state FROM grants"));
+        Assert.Equal("revoked",Scalar(oauth,"SELECT state FROM grants"));
+        Assert.Equal("synthetic-protected-key-fixture",File.ReadAllText(Path.Combine(result.BackupDirectory,"mcp-keys.protected")));
+    }
+    [Fact]
     public void ServiceUpdateBackupKeepsPrivateMasterKeyAccess()
     {
         if(!OperatingSystem.IsWindows())return;

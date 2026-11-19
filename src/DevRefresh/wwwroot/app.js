@@ -90,6 +90,7 @@ function shell() {
       <nav class="nav" aria-label="Основная навигация">
         <button data-page="databases" class="${state.page === "databases" ? "active" : ""}">${navIcon("databases")} ${user.isAdmin ? "Доступные базы" : "Мои базы"}</button>
         <button data-page="jobs" class="${state.page === "jobs" ? "active" : ""}">${navIcon("jobs")} Задания</button>
+        <button data-page="connections" class="${state.page === "connections" ? "active" : ""}">${navIcon("settings")} Подключения MCP</button>
         ${user.isAdmin ? `<button data-page="reduction" class="${state.page === "reduction" ? "active" : ""}">${navIcon("reduction")} Анализ и сокращение</button>` : ""}
         ${user.isAdmin ? `<button data-page="settings" class="${state.page === "settings" ? "active" : ""}">${navIcon("settings")} Настройки</button>
           <button data-page="audit" class="${state.page === "audit" ? "active" : ""}">${navIcon("audit")} Журнал действий</button>` : ""}
@@ -315,7 +316,7 @@ function auditPage() {
 }
 
 async function navigate(page) {
-  if (!["databases", "jobs"].includes(page) && !state.session.user.isAdmin) return;
+  if (!["databases", "jobs", "connections"].includes(page) && !state.session.user.isAdmin) return;
   stopDashboardJobs();
   if (typeof loadJobs === "function") clearTimeout(loadJobs.timer);
   state.page = page;
@@ -323,6 +324,7 @@ async function navigate(page) {
   if (page === "databases") { const loading = loadDatabases();startDashboardJobs();return loading; }
   if (page === "reduction") return loadReduction();
   if (page === "jobs") return loadJobs();
+  if (page === "connections") return loadMcpConnections();
   document.querySelector("#content").innerHTML = '<div class="loading">Загружаем данные…</div>';
   try {
     if (page === "settings") { state.settings = await api("/api/admin/settings"); if (state.page === page) settingsPage(); }
@@ -466,7 +468,7 @@ async function start() {
       if (state.session.windowsAutoSignIn && location.pathname === "/") return location.replace("/auth/windows");
       return authPage(false);
     }
-    await navigate("databases");
+    await navigate(location.pathname === "/connections" ? "connections" : "databases");
   } catch (error) { root.innerHTML = `<div class="loading error-inline">${esc(error.message)} Обновите страницу после проверки сервиса.</div>`; }
 }
 start();

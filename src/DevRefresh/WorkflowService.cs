@@ -297,6 +297,7 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             LiveProgress(text);
         }
         var settings=job.Request.Settings;
+        if(job.Request.Selection is {} selection)McpPlans.ValidateSelection(store,configuration,job.Target!,selection);
         if(job.Request.UseDt)return await RunDt(job,timing,Progress,token);
         if (job.Kind=="shrink-build")
             return await BuildShrinkBackup(job,timing,Progress,LiveProgress,token);
@@ -307,9 +308,11 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
         {
             if (!job.Request.ResolveLatestBackup)
             {
-                if(job.Kind=="refresh")job=job with{Request=job.Request with{Pipeline=store.GetRestorePipeline(settings.Server,
+                if(job.Kind=="refresh"&&job.Request.Selection is null)job=job with{Request=job.Request with{Pipeline=store.GetRestorePipeline(settings.Server,
                     WorkflowRules.ParseBackupName(job.Request.BackupName)?.SourceKey??job.SourceKey,"bak")}};
-                return sql.OpenBackupSource(settings,job.Request.BackupName,token);
+                var selectedSettings=job.Request.Selection?.Mode=="shrink"
+                    ?settings with{BackupDirectory=settings.ShrinkBackupDirectory,SqlBackupDirectory=settings.SqlShrinkBackupDirectory}:settings;
+                return sql.OpenBackupSource(selectedSettings,job.Request.BackupName,token);
             }
             var current=store.GetSettings() ?? throw new InputException("Не настроено подключение.");
             if (!string.Equals(current.Server,settings.Server,StringComparison.OrdinalIgnoreCase))
@@ -402,7 +405,11 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
         try
         {
             var backupFileSize=await sql.Restore(settings,target,backupPath,job.Id,true,token,owner,
-                job.Request.ConfirmDisconnect,progress,replacing:()=>touched=true);
+                job.Request.ConfirmDisconnect,progress,replacing:()=>
+                {
+                    if(job.Request.Selection is {} selection)McpPlans.ValidateSelection(store,configuration,target,selection);
+                    touched=true;
+                });
             timing.FileSizes.Add(backupFileSize);
             await using (var restored=await sql.Open(settings,target,token))
             {
@@ -630,7 +637,7 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
                 const string backupStage="Создание временного .bak";
                 store.RegisterCopyBackup(job.Id,filename,current,backupStage);
                 job=job with {Request=job.Request with {Settings=current,
-                    Pipeline=store.GetRestorePipeline(current.Server,store.GetBackupAliases().GetValueOrDefault(job.SourceKey,job.SourceKey),"bak")},ResourceName=filename};
+                    Pipeline=job.Request.Selection is null?store.GetRestorePipeline(current.Server,store.GetBackupAliases().GetValueOrDefault(job.SourceKey,job.SourceKey),"bak"):job.Request.Pipeline},ResourceName=filename};
                 progress(backupStage);
                 await DatabaseCopy.CreateBackup(connection,job,source,sqlPath,progress,logger,token);
             }

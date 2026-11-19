@@ -78,6 +78,17 @@ public sealed class ServiceKeyPreparationTests : IDisposable
         Assert.Equal(original,File.ReadAllText(file));
         Assert.False(File.Exists(Path.Combine(root,ServiceKeyPreparation.Marker)));
     }
+    [Fact]
+    public void WrongMcpKeyRollsBackRewrappedKeysWithoutSqlSettings()
+    {
+        if(!OperatingSystem.IsWindows())return;
+        _=Protector().Protect("fixture");
+        var file=Assert.Single(Directory.GetFiles(Keys,"*.xml"));var original=File.ReadAllText(file);
+        File.WriteAllText(Path.Combine(root,"mcp-keys.protected"),"invalid-ciphertext");
+        Assert.ThrowsAny<Exception>(()=>ServiceKeyPreparation.Prepare(root));
+        Assert.Equal(original,File.ReadAllText(file));
+        Assert.False(File.Exists(Path.Combine(root,ServiceKeyPreparation.Marker)));
+    }
     public void Dispose()
     {
         SqliteConnection.ClearAllPools();

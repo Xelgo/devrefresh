@@ -69,6 +69,9 @@ public static class ServiceKeyPreparation
     }
     private static void ValidateSecret(string dataPath,string keyPath)
     {
+        var provider=DataProtectionProvider.Create(new DirectoryInfo(keyPath),options=>options.SetApplicationName("DevRefresh"));
+        var oauthKeys=Path.Combine(dataPath,"mcp-keys.protected");
+        if(File.Exists(oauthKeys))_=provider.CreateProtector("DevRefresh.Mcp.Keys.v1").Unprotect(File.ReadAllText(oauthKeys));
         var database=Path.Combine(dataPath,"devrefresh.sqlite");
         if(!File.Exists(database))return;
         using var db=DatabaseMigrator.Connect(database,SqliteOpenMode.ReadOnly);
@@ -76,7 +79,6 @@ public static class ServiceKeyPreparation
         if(cmd.ExecuteScalar() is not string json)return;
         var settings=JsonSerializer.Deserialize<SqlSettings>(json);
         if(settings is null)return;
-        var provider=DataProtectionProvider.Create(new DirectoryInfo(keyPath),options=>options.SetApplicationName("DevRefresh"));
         if(!string.IsNullOrEmpty(settings.ProtectedPassword))
             _=provider.CreateProtector("DevRefresh.SqlPassword.v1").Unprotect(settings.ProtectedPassword);
         if(settings.DtRestore is {} dt)

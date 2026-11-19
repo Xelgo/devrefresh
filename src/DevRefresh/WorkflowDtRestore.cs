@@ -12,8 +12,10 @@ public sealed partial class WorkflowService
             throw new InputException("SQL Server изменился после постановки задания. Запустите актуализацию заново.");
         progress("Подбор архива .dt");
         var type=store.GetBackupAliases().GetValueOrDefault(job.SourceKey,job.SourceKey);
-        var backup=DtRestoreConfiguration.RequireLatest(settings,type);
-        job=job with{Request=job.Request with{Pipeline=store.GetRestorePipeline(settings.Server,backup.SourceKey,"dt")}};
+        var backup=job.Request.Selection is null?DtRestoreConfiguration.RequireLatest(settings,type):
+            DtRestoreConfiguration.Scan(settings).Files.SingleOrDefault(x=>x.Name==job.Request.BackupName&&x.SourceKey==type)
+                ??throw new InputException("Выбранный .dt-архив больше недоступен.");
+        if(job.Request.Selection is null)job=job with{Request=job.Request with{Pipeline=store.GetRestorePipeline(settings.Server,backup.SourceKey,"dt")}};
         var dt=settings.DtRestore!;var archive=Path.Combine(dt.BackupDirectory,backup.Name);
         var info=new FileInfo(archive);
         if(!info.Exists || info.Length==0 || (info.Attributes&FileAttributes.ReparsePoint)!=0)
@@ -39,6 +41,7 @@ public sealed partial class WorkflowService
         try
         {
             progress("Удаление целевой SQL-базы перед созданием из .dt");
+            if(job.Request.Selection is {} selection)McpPlans.ValidateSelection(store,configuration,target,selection);
             touched=true;
             await RestoreSql.Execute(owner,$"ALTER DATABASE {RestoreSql.Q(target)} SET SINGLE_USER"+
                 (job.Request.ConfirmDisconnect?" WITH ROLLBACK IMMEDIATE":" WITH NO_WAIT")+

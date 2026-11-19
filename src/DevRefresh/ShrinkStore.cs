@@ -81,6 +81,12 @@ public sealed partial class Store
         command.CommandText = """
             SELECT b.value FROM shrink_backups b JOIN workflow_jobs build ON build.id=b.job_id
             WHERE b.state<>'current' AND build.status NOT IN ('Queued','Running')
+              AND NOT EXISTS (SELECT 1 FROM workflow_jobs j WHERE j.status IN ('Queued','Running')
+                AND json_extract(j.request,'$.Selection.Mode')='shrink'
+                AND json_extract(j.request,'$.Selection.SourceName')=json_extract(b.value,'$.Backup.Name'))
+              AND NOT EXISTS (SELECT 1 FROM mcp_restore_plans p WHERE p.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                AND json_extract(p.value,'$.Selection.Mode')='shrink'
+                AND json_extract(p.value,'$.Selection.SourceName')=json_extract(b.value,'$.Backup.Name'))
             """;
         using var reader = command.ExecuteReader();
         var backups = new List<StoredShrinkBackup>();

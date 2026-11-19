@@ -46,8 +46,12 @@ public sealed class TestConnection : IStartupFilter
             context.Connection.RemoteIpAddress = context.Request.Headers.ContainsKey("Test-Remote")
                 ? IPAddress.Parse("198.51.100.7") : IPAddress.Loopback;
             if (context.Request.Headers.TryGetValue("Test-Domain", out var domain))
+            {
                 context.User = new ClaimsPrincipal(new ClaimsIdentity([
                     new Claim(ClaimTypes.Name, domain.ToString()), new Claim("kind", "domain")], "TestOnly"));
+                if(context.Request.Headers.TryGetValue("Test-Sid",out var sid))
+                    ((ClaimsIdentity)context.User.Identity!).AddClaim(new(ClaimTypes.PrimarySid,sid.ToString()));
+            }
             await continuation(context);
         });
         next(app);
@@ -57,6 +61,9 @@ public sealed class TestConnection : IStartupFilter
 public sealed class Factory : WebApplicationFactory<Program>
 {
     public bool WindowsEnabled { get; init; } = true;
+    public bool McpEnabled {get;init;}
+    public bool SyntheticNegotiate {get;init;}
+    public IRefreshInspector? RefreshInspector {get;init;}
     public ISqlGateway? SqlGateway { get; init; }
     private static readonly string TestRoot = Path.Combine(Path.GetTempPath(), "DevRefreshTests");
     public string DirectoryPath { get; } = Path.Combine(TestRoot, Guid.NewGuid().ToString("N"));
@@ -67,11 +74,21 @@ public sealed class Factory : WebApplicationFactory<Program>
         builder.UseSetting("DataDirectory", DirectoryPath);
         builder.UseSetting("WindowsAuthentication:Enabled", WindowsEnabled.ToString());
         builder.UseSetting("Workflows:Execute", "false");
+        builder.UseSetting("Mcp:Enabled",McpEnabled.ToString());
+        builder.UseSetting("Mcp:PublicUrl","https://localhost");
+        builder.UseSetting("Mcp:AllowedRedirectUris:0","https://client.example.com/callback");
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<ISqlGateway>();
             services.AddSingleton<ISqlGateway>(SqlGateway ?? new TestSqlGateway());
             services.AddSingleton<IStartupFilter, TestConnection>();
+            if(RefreshInspector is not null){services.RemoveAll<IRefreshInspector>();services.AddSingleton(RefreshInspector);}
+            if(SyntheticNegotiate)
+            {
+                services.AddTransient<SyntheticNegotiateHandler>();
+                services.PostConfigure<Microsoft.AspNetCore.Authentication.AuthenticationOptions>(options=>
+                    options.Schemes.Single(x=>x.Name=="Negotiate").HandlerType=typeof(SyntheticNegotiateHandler));
+            }
         });
     }
     public HttpClient Client() => CreateClient(new WebApplicationFactoryClientOptions

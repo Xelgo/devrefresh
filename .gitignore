@@ -16,6 +16,7 @@ TestResults/
 *.bak
 *.pfx
 *.key
+mcp-keys.protected
 *.pem
 *.log
 .env*

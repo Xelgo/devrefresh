@@ -79,6 +79,8 @@ Directory.CreateDirectory(dataPath);
 Directory.CreateDirectory(logPath);
 var logConfiguration = new LoggerConfiguration().MinimumLevel.Information()
     .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning).Enrich.FromLogContext()
+    .MinimumLevel.Override("Microsoft.EntityFrameworkCore",LogEventLevel.Warning)
+    .MinimumLevel.Override("OpenIddict",LogEventLevel.Warning)
     .WriteTo.File(new JsonFormatter(renderMessage: true), Path.Combine(logPath, "devrefresh-.jsonl"),
         rollingInterval: RollingInterval.Day, fileSizeLimitBytes: 10 * 1024 * 1024,
         rollOnFileSizeLimit: true, retainedFileCountLimit: null, shared: true);
@@ -96,6 +98,7 @@ builder.Services.AddHostedService(sp => new LogRetentionService(logPath, sp.GetR
     sp.GetRequiredService<ILogger<LogRetentionService>>()));
 builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<SettingsService>();
+builder.Services.AddMcpFeature(builder.Configuration,dataPath);
 builder.Services.AddSingleton<ISqlGateway, SqlGateway>();
 builder.Services.AddSingleton<RestoreSql>();
 builder.Services.AddSingleton<IbcmdProcessRunner>();
@@ -137,6 +140,12 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("login", context => RateLimitPartition.GetFixedWindowLimiter(
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    options.AddPolicy("oauth-registration",context=>RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString()??"unknown",_=>new FixedWindowRateLimiterOptions
+        {PermitLimit=20,Window=TimeSpan.FromMinutes(10),QueueLimit=0}));
+    options.AddPolicy("oauth-token",context=>RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString()??"unknown",_=>new FixedWindowRateLimiterOptions
+        {PermitLimit=120,Window=TimeSpan.FromMinutes(1),QueueLimit=0}));
 });
 
 var app = builder.Build();
@@ -191,11 +200,14 @@ app.Use(async (context, next) =>
         await context.Response.WriteAsJsonAsync(new { error = "Не удалось выполнить действие. Подробности доступны администратору в журнале сервера.", requestId = context.TraceIdentifier });
     }
 });
+app.UseMcpBoundary();
 app.UseAuthentication();
+app.UseAuthorization();
 app.Use(async (context, next) =>
 {
     if (context.Request.Path.StartsWithSegments("/api/admin") || context.Request.Path == "/api/databases"
-        || context.Request.Path.StartsWithSegments("/api/refresh") || context.Request.Path.StartsWithSegments("/api/jobs"))
+        || context.Request.Path.StartsWithSegments("/api/refresh") || context.Request.Path.StartsWithSegments("/api/jobs")
+        || context.Request.Path.StartsWithSegments("/api/mcp"))
     {
         var user = context.RequestServices.GetRequiredService<SessionService>().Current(context);
         if (user is null)
@@ -271,9 +283,10 @@ app.MapGet("/auth/windows", async (HttpContext context, Store store) =>
     var name = result.Principal.Identity.Name;
     if (name is null || !name.Contains('\\'))
         return Results.Json(new { error = "Не удалось определить доменное имя DOMAIN\\user." }, statusCode: 403);
-    await SessionService.SignIn(context, name, "domain");
+    await SessionService.SignIn(context, name, "domain",sid:McpOAuthEndpoints.WindowsSid(result.Principal));
     store.Audit(name, "login.domain", "Вход с подтверждённой Windows-идентичностью.");
-    return Results.Redirect("/");
+    var returnUrl=context.Request.Query["returnUrl"].ToString();
+    return Results.Redirect(McpOAuthEndpoints.IsLocalReturn(returnUrl)?returnUrl:"/");
 });
 
 app.MapPost("/api/logout", async (HttpContext context, SessionService sessions, Store store) =>
@@ -370,34 +383,15 @@ app.MapPut("/api/admin/security", async (SecurityInput input, HttpContext contex
 });
 app.MapGet("/api/admin/audit", (Store store) => Results.Ok(store.GetAudit()));
 
-app.MapGet("/api/databases", async (HttpContext context, Store store, SessionService sessions, ISqlGateway sql, CancellationToken token) =>
-{
-    var user = sessions.Current(context)!;
-    var settings = store.GetSettings();
-    if (settings is null) return Results.Ok(new { configured = false, databases = Array.Empty<DatabaseEntry>(), backupError = (string?)null });
-    var databases = await sql.List(settings, token);
-    var visible = databases.Select(x => (Database: x, Parsed: Rules.ParseDatabase(x.Name)))
-        .Where(x => Rules.CanAccessDatabase(x.Parsed, user)).ToArray();
-    var (backups, backupError) = BackupCatalog.Scan(settings.BackupDirectory);
-    var backupsBySource = backups.ToLookup(backup => backup.SourceKey);
-    var (dtFiles,_) = DtRestoreConfiguration.Scan(settings);
-    var dtBySource=dtFiles.ToLookup(backup=>backup.SourceKey);
-    var aliases = store.GetBackupAliases();
-    var entries = visible.Select(x =>
-    {
-        var parsed = x.Parsed!;
-        var backupSource = aliases.GetValueOrDefault(parsed.SourceKey, parsed.SourceKey);
-        return new DatabaseEntry(x.Database.Name, parsed.SourceKey, parsed.OwnerKey, x.Database.State,
-            backupsBySource[backupSource].FirstOrDefault(), x.Database.SizeBytes, backupSource, parsed.IsTestContour,
-            dtBySource[backupSource].FirstOrDefault());
-    }).ToArray();
-    return Results.Ok(new { configured = true, databases = entries, backupError });
-});
+app.MapGet("/api/databases",async(HttpContext context,SessionService sessions,RefreshOperations refresh,CancellationToken token)=>
+    Results.Ok(await refresh.Databases(sessions.Current(context)!,token)));
 
-foreach (var route in new[] { "/", "/login", "/setup" })
+foreach (var route in new[] { "/", "/login", "/setup", "/connections" })
     app.MapGet(route, () => Results.File(Path.Combine(app.Environment.WebRootPath, "index.html"), "text/html; charset=utf-8"));
 
 app.MapWorkflow();
+app.MapMcpFeature();
+await app.InitializeMcp();
 
 app.Lifetime.ApplicationStarted.Register(() => app.Logger.LogInformation(
     "DevRefresh {Version} запущен. Платформа {Platform}. Каталог данных {DataDirectory}. Каталог журналов {LogDirectory}",
