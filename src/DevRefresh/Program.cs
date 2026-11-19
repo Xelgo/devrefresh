@@ -172,7 +172,7 @@ app.Use(async (context, next) =>
     context.Response.Headers.Pragma = "no-cache";
     context.Response.Headers.XContentTypeOptions = "nosniff";
     context.Response.Headers.XFrameOptions = "DENY";
-    context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
+    context.Response.Headers.ContentSecurityPolicy = BrowserSecurityPolicy.Default;
     context.Response.Headers["Referrer-Policy"] = "same-origin";
     if (!context.Request.IsHttps && !IsLocal(context))
     {

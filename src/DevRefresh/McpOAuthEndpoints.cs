@@ -122,13 +122,14 @@ public static class McpOAuthEndpoints
         IOpenIddictApplicationManager applications, IOpenIddictAuthorizationManager authorizations, IAntiforgery csrf, McpConfiguration settings)
     {
         var request = context.GetOpenIddictServerRequest()!;
-        if(store.GetAdmin() is null)return OAuthError(Errors.AccessDenied,"Администратору нужно завершить первоначальную настройку службы.");
-        if(request.RedirectUri is null||!settings.AllowsRedirect(request.RedirectUri))
-            return OAuthError(Errors.InvalidRequest,"Адрес возврата больше не разрешён администратором.");
+        if (store.GetAdmin() is null) return OAuthError(Errors.AccessDenied, "Администратору нужно завершить первоначальную настройку службы.");
+        if (request.RedirectUri is null || !settings.AllowsRedirect(request.RedirectUri))
+            return OAuthError(Errors.InvalidRequest, "Адрес возврата больше не разрешён администратором.");
         if (!request.GetResources().SequenceEqual(new[] { settings.Resource })) return OAuthError(Errors.InvalidTarget, "Укажите resource с точным URL MCP этой службы.");
         if (!request.GetScopes().Contains(McpConfiguration.ReadScope) || request.GetScopes().Any(x => x is not (McpConfiguration.ReadScope or McpConfiguration.RestoreScope or Scopes.OfflineAccess)))
             return OAuthError(Errors.InvalidScope, "Требуется devrefresh.read; дополнительно доступны devrefresh.restore и offline_access.");
         if (request.CodeChallengeMethod != CodeChallengeMethods.Sha256) return OAuthError(Errors.InvalidRequest, "Требуется PKCE S256.");
+        context.Response.Headers.ContentSecurityPolicy = BrowserSecurityPolicy.ForOAuthConsent(settings, request.RedirectUri);
         if (!store.GetWindowsAccess(context.RequestServices.GetRequiredService<IConfiguration>()).Enabled)
             return OAuthError(Errors.AccessDenied, "Доменный вход отключён администратором.");
         var user = sessions.Current(context);
@@ -174,7 +175,7 @@ public static class McpOAuthEndpoints
         var authorization = await authorizations.CreateAsync(principal, sid, (await applications.GetIdAsync(application))!,
             AuthorizationTypes.Permanent, principal.GetScopes(), context.RequestAborted);
         principal.SetAuthorizationId(await authorizations.GetIdAsync(authorization));
-        store.Audit(user.Name, "mcp.authorized", $"Клиент {request.ClientId}, права {string.Join(", ", principal.GetScopes())}.");
+        store.Audit(user.Name, "mcp.authorized", $"Пользователь подтвердил доступ клиента {request.ClientId}; права {string.Join(", ", principal.GetScopes())}. Ожидается обмен кода на токен.");
         return Results.SignIn(principal, authenticationScheme: Scheme);
     }
 
@@ -183,8 +184,10 @@ public static class McpOAuthEndpoints
         var request = context.GetOpenIddictServerRequest()!;
         var result = await context.AuthenticateAsync(Scheme);
         if (!result.Succeeded || result.Principal is null) return OAuthError(Errors.InvalidGrant, "Недействительный код или refresh token.");
-        if (McpOAuth.DomainUser(result.Principal, store, configuration) is null) return OAuthError(Errors.InvalidGrant, "Доменный доступ отключён.");
+        if (McpOAuth.DomainUser(result.Principal, store, configuration) is not { } user) return OAuthError(Errors.InvalidGrant, "Доменный доступ отключён.");
         if (request.GetResources().Any(x => x != settings.Resource)) return OAuthError(Errors.InvalidTarget, "Токен предназначен только для этого MCP.");
+        var action = request.IsAuthorizationCodeGrantType() ? "mcp.token.issued" : "mcp.token.refreshed";
+        context.Items[typeof(McpTokenAudit)]=new McpTokenAudit(user.Name,action,request.ClientId??"");
         return Results.SignIn(result.Principal, authenticationScheme: Scheme);
     }
 

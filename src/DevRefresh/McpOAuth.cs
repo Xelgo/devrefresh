@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
@@ -14,6 +15,7 @@ using static OpenIddict.Abstractions.OpenIddictConstants;
 namespace DevRefresh;
 
 public sealed class McpOAuthDb(DbContextOptions<McpOAuthDb> options) : DbContext(options);
+internal sealed record McpTokenAudit(string Actor,string Action,string ClientId);
 
 public static class McpOAuth
 {
@@ -53,6 +55,14 @@ public static class McpOAuth
                 options.AddEventHandler<OpenIddictServerEvents.HandleConfigurationRequestContext>(handler => handler.UseInlineHandler(context =>
                 {
                     context.Metadata["registration_endpoint"] = new Uri(settings.Issuer, "oauth/register").AbsoluteUri;
+                    return default;
+                }));
+                options.AddEventHandler<OpenIddictServerEvents.ApplyTokenResponseContext>(handler=>handler.UseInlineHandler(context=>
+                {
+                    // Complete audit writes before the HTTP response is sent; no work outlives the request.
+                    var http=context.Transaction.GetHttpRequest()?.HttpContext;
+                    if(context.Error is null&&context.Response.AccessToken is {Length:>0}&&http?.Items[typeof(McpTokenAudit)] is McpTokenAudit audit)
+                        http.RequestServices.GetRequiredService<Store>().Audit(audit.Actor,audit.Action,$"OAuth-клиент {audit.ClientId}: обмен завершён.");
                     return default;
                 }));
                 options.UseAspNetCore().EnableAuthorizationEndpointPassthrough().EnableTokenEndpointPassthrough();
@@ -107,7 +117,7 @@ public sealed class McpAuthorizationResult(McpConfiguration configuration) : IAu
         if (context.Request.Path.StartsWithSegments("/mcp") && !result.Succeeded)
         {
             context.Response.StatusCode = result.Challenged ? 401 : 403;
-            context.Response.Headers.WWWAuthenticate = $"Bearer resource_metadata=\"{configuration.Metadata}\", scope=\"{McpConfiguration.ReadScope}\"";
+            context.Response.Headers.WWWAuthenticate = $"Bearer resource_metadata=\"{configuration.Metadata}\", scope=\"{McpConfiguration.ReadScope} {McpConfiguration.RestoreScope}\"";
             await context.Response.WriteAsJsonAsync(new { error = result.Challenged ? "Требуется OAuth-вход." : "Недостаточно прав MCP." });
             return;
         }

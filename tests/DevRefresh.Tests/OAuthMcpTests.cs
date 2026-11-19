@@ -84,30 +84,39 @@ public sealed class OAuthMcpTests
             ["code_challenge_method"]="S256",["code_challenge"]=WebEncoders.Base64UrlEncode(SHA256.HashData(Encoding.ASCII.GetBytes(Verifier))),
             ["resource"]=validResource?"https://localhost/mcp":"https://other.example.com/mcp"
         };
-        public async Task<(string Code,string Client)> Code(string scopes, bool allow=true,HttpClient? browser=null)
+        public async Task<(string Code,string Client)> Code(string scopes, bool allow=true,HttpClient? browser=null,string callback=Redirect)
         {
-            browser??=Browser;var client=await Register();
+            browser??=Browser;var client=await Register(callback);
             var parameters=Parameters(client,scopes);
+            parameters["redirect_uri"]=callback;
             var response=await browser.GetAsync(QueryHelpers.AddQueryString("/oauth/authorize",parameters));
             var html=await response.Content.ReadAsStringAsync();Assert.True(response.StatusCode==HttpStatusCode.OK,html);
+            var policy=Assert.Single(response.Headers.GetValues("Content-Security-Policy"));
+            Assert.Contains("form-action 'self' "+new Uri(callback).GetLeftPart(UriPartial.Authority),policy);
+            Assert.DoesNotContain("'unsafe-inline'",policy);
             Assert.Contains(Account.Split('\\')[1],html);
             var fields=Regex.Matches(html,"<input type=\"hidden\" name=\"([^\"]+)\" value=\"([^\"]*)\">")
                 .ToDictionary(m=>WebUtility.HtmlDecode(m.Groups[1].Value),m=>WebUtility.HtmlDecode(m.Groups[2].Value));
             fields["decision"]=allow?"allow":"deny";
             var consent=await browser.PostAsync("/oauth/authorize",new FormUrlEncodedContent(fields));
             var result=await consent.Content.ReadAsStringAsync();Assert.True(consent.StatusCode==HttpStatusCode.Redirect,result);
+            Assert.Equal(policy,Assert.Single(consent.Headers.GetValues("Content-Security-Policy")));
             var query=QueryHelpers.ParseQuery(consent.Headers.Location!.Query);
             Assert.Equal("synthetic-state",query["state"].ToString());
             return(query[allow?"code":"error"].ToString(),client);
         }
-        public Task<HttpResponseMessage> Exchange(string code,string client,string verifier=Verifier)=>Anonymous.PostAsync("/oauth/token",
+        public Task<HttpResponseMessage> Exchange(string code,string client,string verifier=Verifier,string callback=Redirect)=>Anonymous.PostAsync("/oauth/token",
             new FormUrlEncodedContent(new Dictionary<string,string>{{"grant_type","authorization_code"},{"code",code},{"client_id",client},
-                {"redirect_uri",Redirect},{"code_verifier",verifier},{"resource","https://localhost/mcp"}}));
+                {"redirect_uri",callback},{"code_verifier",verifier},{"resource","https://localhost/mcp"}}));
         public async Task<(string Access,string Refresh,string Client)> Tokens(bool restore=true)
         {
             var (code,client)=await Code($"{McpConfiguration.ReadScope} {(restore?McpConfiguration.RestoreScope:"")} offline_access");
             var response=await Exchange(code,client);var body=await response.Content.ReadAsStringAsync();Assert.True(response.IsSuccessStatusCode,body);
-            var json=JsonNode.Parse(body)!;return(json["access_token"]!.GetValue<string>(),json["refresh_token"]!.GetValue<string>(),client);
+            var json=JsonNode.Parse(body)!;
+            var granted=(json["scope"]?.GetValue<string>()??"").Split(' ',StringSplitOptions.RemoveEmptyEntries);
+            Assert.Contains(McpConfiguration.ReadScope,granted);
+            if(restore)Assert.Contains(McpConfiguration.RestoreScope,granted);else Assert.DoesNotContain(McpConfiguration.RestoreScope,granted);
+            return(json["access_token"]!.GetValue<string>(),json["refresh_token"]!.GetValue<string>(),client);
         }
         public Task<HttpResponseMessage> Refresh(string token,string client)=>Anonymous.PostAsync("/oauth/token",new FormUrlEncodedContent(new Dictionary<string,string>
             {{"grant_type","refresh_token"},{"refresh_token",token},{"client_id",client},{"resource","https://localhost/mcp"}}));
@@ -155,6 +164,7 @@ public sealed class OAuthMcpTests
         using var response=await host.Anonymous.PostAsync("/mcp",null);
         Assert.Equal(HttpStatusCode.Unauthorized,response.StatusCode);
         Assert.Contains("resource_metadata=\"https://localhost/.well-known/oauth-protected-resource/mcp\"",response.Headers.WwwAuthenticate.ToString());
+        Assert.Contains("scope=\"devrefresh.read devrefresh.restore\"",response.Headers.WwwAuthenticate.ToString());
     }
 
     [Theory]
@@ -413,5 +423,54 @@ public sealed class OAuthMcpTests
         Assert.Equal(HttpStatusCode.OK,(await host.Exchange(code,client)).StatusCode);
         var session=(await host.Anonymous.GetFromJsonAsync<JsonObject>("/api/session"))!;
         Assert.Equal(Account,session["user"]!["name"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task OAuthConsentPermitsOnlyTheValidatedCallbackOriginAndOtherPagesRemainStrict()
+    {
+        using var host=new Host();
+        const string callback="http://127.0.0.1:19876/mcp/oauth/callback";
+        var client=await host.Register(callback);var parameters=Host.Parameters(client,"devrefresh.read devrefresh.restore");
+        parameters["redirect_uri"]=callback;
+        using var consent=await host.Browser.GetAsync(QueryHelpers.AddQueryString("/oauth/authorize",parameters));
+        Assert.Equal(HttpStatusCode.OK,consent.StatusCode);
+        var policy=Assert.Single(consent.Headers.GetValues("Content-Security-Policy"));
+        Assert.Equal(BrowserSecurityPolicy.Default+" http://127.0.0.1:19876",policy);
+        Assert.DoesNotContain("http://127.0.0.1:*",policy);
+        using var page=await host.Browser.GetAsync("/");
+        Assert.Equal(BrowserSecurityPolicy.Default,Assert.Single(page.Headers.GetValues("Content-Security-Policy")));
+        parameters["redirect_uri"]="http://127.0.0.1:19877/unregistered";
+        using var rejected=await host.Browser.GetAsync(QueryHelpers.AddQueryString("/oauth/authorize",parameters));
+        Assert.Equal(HttpStatusCode.BadRequest,rejected.StatusCode);
+        Assert.Equal(BrowserSecurityPolicy.Default,Assert.Single(rejected.Headers.GetValues("Content-Security-Policy")));
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:19876/mcp/oauth/callback?client=example", "http://127.0.0.1:19876")]
+    [InlineData("http://127.0.0.1:19876/callback;script-src%20*", "http://127.0.0.1:19876")]
+    [InlineData("http://localhost:42123/callback", "http://localhost:42123")]
+    [InlineData("http://[::1]:42123/callback", "http://[::1]:42123")]
+    [InlineData("https://client.example.com/callback", "https://client.example.com")]
+    public void ConsentPolicyKeepsUntrustedPathsAndQueriesOutOfCsp(string callback,string origin)
+    {
+        var config=new McpConfiguration(true,new Uri("https://localhost/"),["https://client.example.com/callback"]);
+        Assert.Equal(BrowserSecurityPolicy.Default+" "+origin,BrowserSecurityPolicy.ForOAuthConsent(config,callback));
+        Assert.Throws<InputException>(()=>BrowserSecurityPolicy.ForOAuthConsent(config,"https://unapproved.example.com/callback"));
+    }
+
+    [Fact]
+    public async Task OpenCodeLoopbackCallbackCompletesCodeExchangeWithRestorePermission()
+    {
+        using var host=new Host();
+        const string callback="http://127.0.0.1:19876/mcp/oauth/callback";
+        var (code,client)=await host.Code("devrefresh.read devrefresh.restore offline_access",callback:callback);
+        using var exchanged=await host.Exchange(code,client,callback:callback);
+        var text=await exchanged.Content.ReadAsStringAsync();Assert.True(exchanged.IsSuccessStatusCode,text);
+        var tokens=JsonNode.Parse(text)!;
+        Assert.Contains(McpConfiguration.RestoreScope,tokens["scope"]!.GetValue<string>());
+        var identity=Host.Payload(await host.Tool(tokens["access_token"]!.GetValue<string>(),"get_identity"));
+        Assert.True(identity["canRestore"]!.GetValue<bool>());
+        Assert.Equal(Account,identity["name"]!.GetValue<string>());
+        Assert.Contains(host.Store.GetAudit(),entry=>entry.Actor==Account&&entry.Action=="mcp.token.issued");
     }
 }
