@@ -80,10 +80,13 @@ public sealed class SettingsService(Store store, IDataProtectionProvider protect
                 .Where(x=>x.Length>0).Any(x=>string.Equals(dtPath,Path.TrimEndingDirectorySeparator(Path.GetFullPath(x)),StringComparison.OrdinalIgnoreCase)))
                 throw new InputException("Для .dt нужен отдельный каталог, отличный от каталогов .bak, IBCMD и рабочих данных.");
         }
+        var oneC=input.OneC;
+        if(oneC is {ClusterAddress.Length:>0,PlatformDirectory.Length:0} && dt?.IbcmdDirectory is {Length:>0} bin)
+            oneC=oneC with{PlatformDirectory=bin};
         return new(input.Server.Trim(), input.Authentication, input.Authentication == "sql" ? input.Username.Trim() : "",
             password, input.BackupDirectory.Trim(), input.SqlBackupDirectory.Trim(), input.TrustServerCertificate,
             input.RunDbccCheckDb ?? previous?.RunDbccCheckDb ?? true, shrinkPath, sqlShrinkPath, copyPath, sqlCopyPath,
-            dt);
+            dt,OneCConfiguration.Prepare(oneC,previous?.OneC));
     }
 
     public string ConnectionString(SqlSettings value)

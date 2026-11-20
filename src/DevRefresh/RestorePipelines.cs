@@ -24,15 +24,6 @@ public static class RestorePipelineRules
         if(archiveFormat is not ("bak" or "dt"))throw new InputException("Выберите формат архива .bak или .dt.");
         if(domain is not null)ValidateDomain(domain);
     }
-    internal static string? ReplaceDomain(string value,string domain)
-    {
-        var prefix=0;while(prefix<value.Length && value[prefix]=='\\')prefix++;
-        if(prefix>2 || value.Any(char.IsControl))return null;
-        var separator=value.IndexOf('\\',prefix);
-        if(separator<=prefix || separator==value.Length-1 || value.IndexOf('\\',separator+1)>=0)return null;
-        if(value[prefix..separator].Equals(domain,StringComparison.OrdinalIgnoreCase))return value;
-        return value[..prefix]+domain+value[separator..];
-    }
 }
 
 public sealed partial class Store

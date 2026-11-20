@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+  <ExternalDataProcessor uuid="a5640878-c953-43d9-8a15-e2b2560c580a">
+    <InternalInfo>
+      <xr:ContainedObject><xr:ClassId>c3831ec8-d8d5-4f93-8a22-f9bfae07327f</xr:ClassId><xr:ObjectId>a2cad11f-9e73-417a-864f-27ae20bf3727</xr:ObjectId></xr:ContainedObject>
+      <xr:GeneratedType name="ExternalDataProcessorObject.DevRefreshDomain" category="Object"><xr:TypeId>3e750cfb-f72c-44ec-b4f4-52aa0c177089</xr:TypeId><xr:ValueId>2bb62b40-98bd-4e10-bde6-96da724fa596</xr:ValueId></xr:GeneratedType>
+    </InternalInfo>
+    <Properties><Name>DevRefreshDomain</Name><Synonym/><Comment/><DefaultForm/><AuxiliaryForm/></Properties>
+    <ChildObjects/>
+  </ExternalDataProcessor>
+</MetaDataObject>

@@ -58,6 +58,15 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
     }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        while(true)
+        {
+            try{await pipelineExecutor.RecoverPending();break;}
+            catch(Exception error)when(!stoppingToken.IsCancellationRequested)
+            {
+                logger.LogError("Восстановление пользователей 1С не завершено; новые задания ожидают. {Error}",error.Message);
+                await Task.Delay(TimeSpan.FromSeconds(30),stoppingToken);
+            }
+        }
         if(!configuration.GetValue("Workflows:Execute",true)){await Task.Delay(Timeout.Infinite,stoppingToken);return;}
         var maxParallelJobs = Math.Max(1,configuration.GetValue("Workflows:MaxParallelJobs",2));
         var running = new Dictionary<string,Task>(StringComparer.OrdinalIgnoreCase);
@@ -148,6 +157,7 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             var message=ex switch
             {
                 InputException=>ex.Message,
+                OneCRecoveryException=>ex.Message,
                 SqlException sqlError=>$"SQL {sqlError.Number}: {sqlError.Message}",
                 SqlServiceException { Number: int number }=>$"SQL {number}: {ex.Message}",
                 _=>"Не удалось выполнить задание. "+ex.Message
@@ -390,6 +400,7 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
     {
         if(job.Kind!="refresh" || job.Target is not { } target || Rules.ParseDatabase(target)?.SourceKey!=job.SourceKey)
             throw new InputException("Некорректная база назначения.");
+        pipelineExecutor.Validate(settings,job.Request.Pipeline);
         progress("Проверка базы назначения и соединений");
         await using var owner=await sql.Open(settings,token:token);
         if(!await DatabaseCopy.TryRefreshLock(owner,target,"Exclusive",token))
@@ -414,9 +425,10 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
             await using (var restored=await sql.Open(settings,target,token))
             {
                 await CaptureDeveloperSize(restored,target,"После восстановления",timing,progress,token);
-                operations=await pipelineExecutor.Apply(restored,job.Request.Pipeline,target,progress,token);
-                await CheckDeveloperCopy(restored,target,settings,progress,token);
             }
+            if(job.Request.Pipeline is {Operations.Length:>0})await OpenDeveloperAccess(owner,target,job.Request.ConfirmDisconnect,token);
+            operations=await pipelineExecutor.Apply(settings,job.Request.Pipeline,target,job.Id,progress,token);
+            await using(var restored=await sql.Open(settings,target,token))await CheckDeveloperCopy(restored,target,settings,progress,token);
             progress("Возврат базы в многопользовательский режим");
             await OpenDeveloperAccess(owner,target,job.Request.ConfirmDisconnect,token);
             opened=true;
@@ -430,7 +442,7 @@ public sealed partial class WorkflowService(Store store,RestoreSql sql,Structure
         catch(Exception ex){failure=ex;throw;}
         finally
         {
-            if(touched && !opened)
+            if(touched && !opened && failure is not OneCRecoveryException)
             {
                 using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 try

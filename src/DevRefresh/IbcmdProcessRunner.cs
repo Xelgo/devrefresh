@@ -9,7 +9,7 @@ internal sealed record IbcmdProcessResult(int ExitCode,string Output);
 public sealed class IbcmdProcessRunner
 {
     internal async Task<IbcmdProcessResult> Run(ProcessStartInfo start,string? password,TimeSpan timeout,
-        string[] secrets,CancellationToken token)
+        string[] secrets,CancellationToken token,string operationName="IBCMD")
     {
         token.ThrowIfCancellationRequested();
         start.UseShellExecute=false;start.CreateNoWindow=true;start.WindowStyle=ProcessWindowStyle.Hidden;
@@ -17,8 +17,8 @@ public sealed class IbcmdProcessRunner
         start.StandardOutputEncoding=Encoding.UTF8;start.StandardErrorEncoding=Encoding.UTF8;
         start.StandardInputEncoding=new UTF8Encoding(false);
         using var process=new Process{StartInfo=start};
-        try { if(!process.Start())throw new InputException("Не удалось запустить IBCMD."); }
-        catch(Win32Exception){throw new InputException("Не удалось запустить IBCMD. Проверьте установку платформы и права службы.");}
+        try { if(!process.Start())throw new InputException($"Не удалось запустить {operationName}."); }
+        catch(Win32Exception){throw new InputException($"Не удалось запустить {operationName}. Проверьте установку платформы и права службы.");}
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(timeout);
         async Task<string> Drain(StreamReader reader)
@@ -53,7 +53,7 @@ public sealed class IbcmdProcessRunner
             await process.WaitForExitAsync(CancellationToken.None);
             try{await Task.WhenAll(stdout,stderr);}catch(OperationCanceledException){}
             token.ThrowIfCancellationRequested();
-            throw new InputException("Превышен таймаут IBCMD. Загрузка остановлена; проверьте состояние целевой базы перед повтором.");
+            throw new InputException($"Превышен таймаут: {operationName}. Проверьте состояние целевой базы перед повтором.");
         }
         finally
         {

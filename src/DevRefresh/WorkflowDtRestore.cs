@@ -16,6 +16,7 @@ public sealed partial class WorkflowService
             DtRestoreConfiguration.Scan(settings).Files.SingleOrDefault(x=>x.Name==job.Request.BackupName&&x.SourceKey==type)
                 ??throw new InputException("Выбранный .dt-архив больше недоступен.");
         if(job.Request.Selection is null)job=job with{Request=job.Request with{Pipeline=store.GetRestorePipeline(settings.Server,backup.SourceKey,"dt")}};
+        pipelineExecutor.Validate(settings,job.Request.Pipeline);
         var dt=settings.DtRestore!;var archive=Path.Combine(dt.BackupDirectory,backup.Name);
         var info=new FileInfo(archive);
         if(!info.Exists || info.Length==0 || (info.Attributes&FileAttributes.ReparsePoint)!=0)
@@ -37,7 +38,7 @@ public sealed partial class WorkflowService
             throw new InputException("База назначения не существует, недоступна или является снимком.");
         if(!job.Request.ConfirmDisconnect && await sql.Sessions(settings,target,token)>0)
             throw new InputException("В базе есть соединения. Подтвердите их завершение.");
-        var touched=false;var dropped=false;
+        var touched=false;var dropped=false;var holdClosed=false;
         try
         {
             progress("Удаление целевой SQL-базы перед созданием из .dt");
@@ -54,21 +55,22 @@ public sealed partial class WorkflowService
             await using(var restored=await sql.Open(settings,target,token))
             {
                 await CaptureDeveloperSize(restored,target,"После создания из .dt",timing,progress,token);
-                operations=await pipelineExecutor.Apply(restored,job.Request.Pipeline,target,progress,token);
-                await CheckDeveloperCopy(restored,target,settings,progress,token);
             }
+            operations=await pipelineExecutor.Apply(settings,job.Request.Pipeline,target,job.Id,progress,token);
+            await using(var restored=await sql.Open(settings,target,token))await CheckDeveloperCopy(restored,target,settings,progress,token);
             var result=new {Database=target,Backup=backup.Name,RestoreMode="dt",DtDataDate=backup.BackupDate,
                 IbcmdVersion=version.ToString(),Shrink=false,PersonalDataProcessed=false,
                 SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0,PostRestoreOperations=operations};
             store.MarkDatabaseReady(job.Id,result);return new(result);
         }
+        catch(OneCRecoveryException){holdClosed=true;throw;}
         catch(InputException error) when(dropped)
         {
             throw new InputException("Прежняя SQL-база удалена. Создание или обработка новой базы не завершены: "+error.Message);
         }
         finally
         {
-            if(touched)
+            if(touched && !holdClosed)
             {
                 using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 try

@@ -322,7 +322,7 @@ async function openJob(id) {
 
 function postRestoreResultsMarkup(operations) {
   if (!operations?.length) return "";
-  return `<h3>Операции после восстановления</h3>${operations.map(operation=>`<p>Подмена домена → ${esc(operation.targetDomain)}: изменено ${number(operation.changed)}, уже соответствовало ${number(operation.unchanged)}.</p>`).join("")}`;
+  return `<h3>Операции после восстановления</h3>${operations.map(operation=>`<p>Подмена домена → ${esc(operation.targetDomain)}: записано пользователей ${number(operation.changed)}.</p>`).join("")}`;
 }
 
 async function openRefreshDialog(row) {

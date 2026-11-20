@@ -149,9 +149,9 @@ function restorePipelinesMarkup(settings) {
       <div class="field full"><label for="pipeline-source-type">Вид базы / тип архива</label><input id="pipeline-source-type" name="sourceType" placeholder="bp_gm" maxlength="64" required><small>Тип из имени архива без даты и расширения: bp_gm для bp_gm_18-11-2026.bak или bp_gm.dt. Если настроено соответствие имён, укажите тип файла бэкапа.</small></div>
       <div class="field full"><label for="pipeline-format">Формат архива</label><select id="pipeline-format" name="archiveFormat">${Object.entries(restoreFormatLabels).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></div>
       <div class="field full"><label class="checkbox"><input id="pipeline-rewrite-domain" name="rewriteDomain" type="checkbox"><span>Подменять домен</span></label></div>
-      <div class="field full"><label for="pipeline-domain">Целевой домен</label><input id="pipeline-domain" name="targetDomain" value="CORP" maxlength="253" placeholder="CORP"><small>Например: \\\\CORP_TEST\\demo_owner → \\\\CORP\\demo_owner. Меняется только домен в v8users.OSName; имя учётной записи сохраняется.</small></div>
+      <div class="field full"><label for="pipeline-domain">Целевой домен</label><input id="pipeline-domain" name="targetDomain" value="CORP" maxlength="253" placeholder="CORP"><small>Например: \\\\EXAMPLE_TEST\\demo_owner → \\\\CORP\\demo_owner. Обработка 1С меняет домен и записывает только пользователей с включённой ОС-аутентификацией.</small></div>
       </div><div class="form-actions"><button class="button primary" type="submit">Сохранить правило</button></div><div class="form-result" role="status"></div></form>
-      <p class="muted">Правило .bak общее для Full, Shrink и копирования Dev-базы; правило .dt задаётся отдельно. Сервер: ${esc(settings.connection.server || "сначала сохраните подключение")}. Снятая галочка отключает подмену. Роли, пароли и двоичные данные пользователей не изменяются.</p>
+      <p class="muted">Правило .bak общее для Full, Shrink и копирования Dev-базы; правило .dt задаётся отдельно. Сервер: ${esc(settings.connection.server || "сначала сохраните подключение")}. Снятая галочка отключает подмену. Роли и пароли не задаются обработкой; связанные данные сохраняет платформа 1С.</p>
     </div>${pipelines.length ? `<div class="table-wrap"><table><thead><tr><th>Вид базы / сервер</th><th>Архив</th><th>Подмена домена</th><th></th></tr></thead><tbody>${pipelines.map((pipeline,index)=>`<tr><td>${esc(pipeline.sourceType)}<small>${esc(pipeline.server)}</small>${pipeline.migrationNotice ? `<small class="error-inline">${esc(pipeline.migrationNotice)}</small>` : ""}</td><td>${esc(restoreFormatLabels[pipeline.archiveFormat] ?? pipeline.archiveFormat)}</td><td>${pipeline.operations.length ? esc(pipeline.operations[0].targetDomain) : "Выключено"}</td><td><button type="button" class="button" data-pipeline-edit="${index}">Изменить</button> <button type="button" class="button" data-pipeline-delete="${index}">Удалить</button></td></tr>`).join("")}</tbody></table></div>` : '<div class="empty"><p>Правила пока не назначены.</p></div>'}</section>`;
 }
 
@@ -201,6 +201,13 @@ function settingsPage() {
         </div>
         <p class="muted">Перед загрузкой .dt целевая SQL-база удаляется. IBCMD создаёт новую базу через infobase create --restore. Нужны только SQL-логин и пароль с правом создания баз. Если создание завершится ошибкой, прежняя база будет утрачена. Остановите фоновые задания и новые подключения 1С.</p>
         <button type="button" class="button" data-action="test-ibcmd">Проверить IBCMD</button>
+        <hr class="divider"><h3>Кластер 1С для подмены домена</h3>
+        <div class="form-grid">
+          <div class="field full"><label for="oneC-cluster">Адрес кластера 1С</label><input id="oneC-cluster" name="oneCCluster" value="${esc(value.oneC?.clusterAddress ?? "")}" placeholder="SERVER-1C:1541" maxlength="256"><small>Имя информационной базы в кластере совпадает с именем SQL-базы.</small></div>
+          <div class="field full"><label for="oneC-platform">Папка bin платформы 1С</label><input id="oneC-platform" name="oneCPlatform" value="${esc(value.oneC?.platformDirectory ?? "")}" placeholder="C:\\Program Files\\1cv8\\8.3.27.2214\\bin" maxlength="2048"><small>Пусто — использовать папку IBCMD выше. Нужна установленная платформа с comcntr.dll той же версии, что и сервер 1С.</small></div>
+          <div class="field"><label for="oneC-timeout">Таймаут операции, секунд</label><input id="oneC-timeout" name="oneCTimeout" type="number" min="15" max="1800" value="${esc(value.oneC?.timeoutSeconds ?? 180)}"></div>
+        </div>
+        <p class="muted">Используется для правил «Подменять домен». Перед выполнением обеспечьте отсутствие новых подключений и фоновых заданий в целевой базе. Служба временно сохраняет список пользователей, входит в 1С и возвращает список перед запуском обработки. Пароли пользователей ИБ не требуются.</p>
         <hr class="divider"><h3>После актуализации</h3>
         <label class="checkbox"><input name="runDbccCheckDb" type="checkbox" ${value.runDbccCheckDb ? "checked" : ""}><span>Проверять целостность SQL-базы (DBCC CHECKDB)<small>Выполняется в конце актуализации. Настройка применяется к новым заданиям.</small></span></label>
         <div class="form-actions"><button type="button" class="button" data-action="test-connection">Проверить подключение</button><button type="submit" class="button primary">Сохранить настройки</button></div>
@@ -305,6 +312,10 @@ function settingsInput(form) {
       ibcmdDirectory: form.elements.ibcmdDirectory.value, workingDirectory: form.elements.ibcmdWorkingDirectory.value,
       sqlUsername: form.elements.ibcmdSqlUsername.value, sqlPassword: form.elements.ibcmdSqlPassword.value || null,
       timeoutMinutes: form.elements.ibcmdTimeoutMinutes.valueAsNumber
+    } : null,
+    oneC: form.elements.oneCCluster ? {
+      clusterAddress: form.elements.oneCCluster.value,platformDirectory: form.elements.oneCPlatform.value,
+      timeoutSeconds: form.elements.oneCTimeout.valueAsNumber
     } : null
   };
 }

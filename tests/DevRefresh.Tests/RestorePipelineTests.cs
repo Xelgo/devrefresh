@@ -9,25 +9,44 @@ namespace DevRefresh.Tests;
 
 public sealed class RestorePipelineTests
 {
-    [Theory]
-    [InlineData(@"\\CORP_TEST\demo_owner",@"\\CORP\demo_owner")]
-    [InlineData(@"\\CORP.EXAMPLE.COM\demo_user",@"\\CORP\demo_user")]
-    [InlineData(@"CORP_TEST\User_Name",@"CORP\User_Name")]
-    [InlineData(@"\\corp\same",@"\\corp\same")]
-    public void RewritePreservesAccountAndLeadingSlashes(string before,string after)
-    {
-        var result=Assert.Single(RestorePipelineExecutor.Plan([(new byte[16],before)],"CORP",128));
-        Assert.Equal(after,result.After);
-    }
     [Fact]
-    public void PlanningRejectsCollisionsUnknownFormatsAndColumnOverflowBeforeWriting()
+    public void PipelineRequiresConfiguredOneCInsteadOfDirectSqlRewrite()
     {
-        Assert.Throws<InputException>(()=>RestorePipelineExecutor.Plan([
-            (new byte[16],@"\\FIRST\same"),(new byte[16],@"\\CORP\SAME")],"CORP",128));
-        Assert.Throws<InputException>(()=>RestorePipelineExecutor.Plan([(new byte[16],"user@domain")],"CORP",128));
-        Assert.Throws<InputException>(()=>RestorePipelineExecutor.Plan([(new byte[16],@"\\OLD\long_account")],"CORP",10));
+        using var app=new Factory();
+        var pipeline=new RestorePipeline("SQL","bp","bak",[new(RestorePipelineRules.WindowsDomain,"CORP")],"now","admin");
+        var settings=new SqlSettings("SQL","windows","","",app.DirectoryPath,app.DirectoryPath,true);
+        var executor=app.Services.GetRequiredService<RestorePipelineExecutor>();
+        Assert.Throws<InputException>(()=>executor.Validate(settings,pipeline));
+        executor.Validate(settings,pipeline with{Operations=[]});
         Assert.Throws<InputException>(()=>RestorePipelineRules.Validate("bp.invalid","bak","CORP"));
         Assert.Throws<InputException>(()=>RestorePipelineRules.Validate("bp","bak",@"CORP\user"));
+    }
+
+    [Fact]
+    public async Task OneCClusterSettingsRoundTripAndLegacyClientsPreserveThem()
+    {
+        using var app=new Factory();using var admin=app.Client();
+        await Send(admin,HttpMethod.Post,"/api/setup",new SetupInput("admin","Synthetic-pipeline-password!",[]));
+        var value=new OneCSettings("TEST-1C:1541",Path.Combine(app.DirectoryPath,"platform"),120);
+        var input=new SettingsInput("TEST-SQL","windows","",null,app.DirectoryPath,app.DirectoryPath,false,OneC:value);
+        Assert.Equal(HttpStatusCode.OK,(await Send(admin,HttpMethod.Put,"/api/admin/settings",input)).StatusCode);
+        var saved=(await admin.GetFromJsonAsync<JsonObject>("/api/admin/settings"))!;
+        Assert.Equal(value.ClusterAddress,saved["connection"]!["oneC"]!["clusterAddress"]!.GetValue<string>());
+        await Send(admin,HttpMethod.Put,"/api/admin/settings",input with{OneC=null});
+        Assert.Equal(value,app.Services.GetRequiredService<Store>().GetSettings()!.OneC);
+        Assert.Equal(HttpStatusCode.BadRequest,(await Send(admin,HttpMethod.Put,"/api/admin/settings",input with{OneC=value with{ClusterAddress="host;Usr=other"}})).StatusCode);
+    }
+
+    [Fact]
+    public async Task DisabledDomainRuleDoesNotStartOneCOrCreateUserSnapshots()
+    {
+        using var app=new Factory();
+        var executor=app.Services.GetRequiredService<RestorePipelineExecutor>();
+        var settings=new SqlSettings("UNREACHABLE-SQL","windows","","",app.DirectoryPath,app.DirectoryPath,false);
+        var disabled=new RestorePipeline("UNREACHABLE-SQL","bp","bak",[],"now","admin");
+        foreach(var pipeline in new RestorePipeline?[]{null,disabled})
+            Assert.Empty(await executor.Apply(settings,pipeline,"bp_dev_demo_owner",Guid.NewGuid().ToString("N"),_=>throw new Exception("Disabled pipeline started"),CancellationToken.None));
+        Assert.False(Directory.Exists(Path.Combine(app.DirectoryPath,"oneC-auth")));
     }
 
     static async Task<HttpResponseMessage> Send(HttpClient client,HttpMethod method,string path,object? body=null)

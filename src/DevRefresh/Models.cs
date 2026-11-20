@@ -10,12 +10,12 @@ public sealed record SqlSettings(string Server, string Authentication, string Us
     string ProtectedPassword, string BackupDirectory, string SqlBackupDirectory,
     bool TrustServerCertificate, bool RunDbccCheckDb = true,
     string ShrinkBackupDirectory = "", string SqlShrinkBackupDirectory = "",
-    string CopyBackupDirectory = "", string SqlCopyBackupDirectory = "", DtRestoreSettings? DtRestore = null);
+    string CopyBackupDirectory = "", string SqlCopyBackupDirectory = "", DtRestoreSettings? DtRestore = null, OneCSettings? OneC = null);
 public sealed record SettingsInput(string Server, string Authentication, string Username,
     string? Password, string BackupDirectory, string SqlBackupDirectory,
     bool TrustServerCertificate, bool? RunDbccCheckDb = null,
     string? ShrinkBackupDirectory = null, string? SqlShrinkBackupDirectory = null,
-    string? CopyBackupDirectory = null, string? SqlCopyBackupDirectory = null, DtRestoreInput? DtRestore = null);
+    string? CopyBackupDirectory = null, string? SqlCopyBackupDirectory = null, DtRestoreInput? DtRestore = null, OneCSettings? OneC = null);
 public sealed record SetupInput(string Username, string Password, string[]? WindowsAdmins);
 public sealed record LoginInput(string Username, string Password);
 public sealed record SecurityInput(string[]? WindowsAdmins, string? NewPassword,
@@ -136,6 +136,7 @@ public static partial class Rules
         sqlShrinkBackupDirectory = settings?.SqlShrinkBackupDirectory ?? "",
         copyBackupDirectory = settings?.CopyBackupDirectory ?? "",
         sqlCopyBackupDirectory = settings?.SqlCopyBackupDirectory ?? "",
-        dtRestore = DtRestoreConfiguration.Public(settings?.DtRestore)
+        dtRestore = DtRestoreConfiguration.Public(settings?.DtRestore),
+        oneC = settings?.OneC
     };
 }

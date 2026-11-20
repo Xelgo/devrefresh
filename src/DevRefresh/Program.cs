@@ -34,7 +34,13 @@ if (builder.Configuration["Maintenance"] is { } maintenance)
     try
     {
         object result;
-        if (maintenance == "migrate")
+        if(maintenance=="oneC-domain")
+        {
+            Console.InputEncoding=new System.Text.UTF8Encoding(false);
+            Environment.ExitCode=OneCDomainWorker.Run(Console.In.ReadToEnd());
+            return;
+        }
+        else if (maintenance == "migrate")
         {
             using var maintenanceLock = RuntimeDataLock.Acquire(dataPath);
             result = DatabaseMigrator.Ensure(Path.Combine(dataPath, "devrefresh.sqlite"));
@@ -110,6 +116,7 @@ builder.Services.AddSingleton<RestoreSql>();
 builder.Services.AddSingleton<IbcmdProcessRunner>();
 builder.Services.AddSingleton<IbcmdRestore>();
 builder.Services.AddSingleton<RestorePipelineExecutor>();
+builder.Services.AddSingleton<OneCDomainService>();
 builder.Services.AddSingleton<StructureAnalyzer>();
 builder.Services.AddSingleton<DevDatabaseAnalysis>();
 builder.Services.AddSingleton<ReductionExecutor>();

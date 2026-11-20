@@ -29,6 +29,8 @@ public sealed class RestorePipelineSqlTests
                     CREATE TABLE dbo.v8users(ID binary(16) PRIMARY KEY,Name nvarchar(64),OSName nvarchar(128),
                         Changed datetime2,Data varbinary(max),RolesID int,EAuth binary(1));
                     CREATE TABLE dbo.Params(FileName nvarchar(128),BinaryData varbinary(max));
+                    CREATE TABLE dbo.V8USERSMATKEYS(ID binary(16),KeyData varbinary(max));
+                    INSERT dbo.V8USERSMATKEYS VALUES(0x01,0x010203);
                     INSERT dbo.Params VALUES(N'users.usr',0x010203040506);
                     INSERT dbo.v8users VALUES(0x01,N'first',N'\\OLD\first','4026-11-18',0x010203,7,0x01),
                         (0x02,N'second',N'\\OTHER\second','4026-11-18',0x040506,8,0x00),
@@ -57,29 +59,38 @@ public sealed class RestorePipelineSqlTests
         """);
 
     [DomainSqlFact]
-    public async Task SqlChangesOnlyOsNameAndIsIdempotent()
+    public async Task SnapshotReturnsAllUserFieldsAndUsersUsrAfterTemporaryClear()
     {
         await using var fixture=await Fixture.Create();await using var db=await fixture.Open();
-        var before=await Fingerprint(db);var executor=new RestorePipelineExecutor();
-        var result=Assert.Single(await executor.Apply(db,fixture.Pipeline("CORP"),fixture.Database,_=>{},CancellationToken.None));
-        Assert.Equal(2,result.Changed);Assert.Equal(1,result.Unchanged);Assert.Equal(before,await Fingerprint(db));
-        Assert.Equal(@"\\CORP\first",await RestoreSql.Scalar<string>(db,"SELECT OSName FROM dbo.v8users WHERE Name='first'"));
-        Assert.Equal(0,Assert.Single(await executor.Apply(db,fixture.Pipeline("CORP"),fixture.Database,_=>{},CancellationToken.None)).Changed);
+        var before=await Fingerprint(db);var id=Guid.NewGuid().ToString("N");
+        await OneCUserSnapshot.SaveAndClear(db,id,CancellationToken.None);
+        Assert.Equal(0,await RestoreSql.Scalar<int>(db,"SELECT COUNT(*) FROM dbo.v8users"));
+        await OneCUserSnapshot.Restore(db,id,CancellationToken.None);
+        Assert.Equal(before,await Fingerprint(db));
+        Assert.Equal(@"\\OLD\first",await RestoreSql.Scalar<string>(db,"SELECT OSName FROM dbo.v8users WHERE Name='first'"));
+        await OneCUserSnapshot.Remove(db,id,CancellationToken.None);
     }
     [DomainSqlFact]
-    public async Task CollisionDoesNotWriteAnyRows()
+    public async Task SnapshotRecoveryUndoesPartialUserWritesWithoutTouchingOtherParams()
     {
         await using var fixture=await Fixture.Create();await using var db=await fixture.Open();
-        await RestoreSql.Execute(db,"UPDATE dbo.v8users SET OSName=N'\\CORP\first' WHERE Name='existing'");
-        await Assert.ThrowsAsync<InputException>(()=>new RestorePipelineExecutor().Apply(db,fixture.Pipeline("CORP"),fixture.Database,_=>{},CancellationToken.None));
-        Assert.Equal(@"\\OLD\first",await RestoreSql.Scalar<string>(db,"SELECT OSName FROM dbo.v8users WHERE Name='first'"));
+        await RestoreSql.Execute(db,"INSERT dbo.Params VALUES(N'other.setting',0xAABB)");
+        var before=await Fingerprint(db);var id=Guid.NewGuid().ToString("N");
+        await OneCUserSnapshot.SaveAndClear(db,id,CancellationToken.None);
+        await OneCUserSnapshot.Restore(db,id,CancellationToken.None);
+        await RestoreSql.Execute(db,"UPDATE dbo.v8users SET OSName=N'\\CORP\first',Data=0xABCDEF WHERE Name='first'; UPDATE dbo.Params SET BinaryData=0xDEAD WHERE FileName='users.usr'; DELETE FROM dbo.V8USERSMATKEYS");
+        await OneCUserSnapshot.Restore(db,id,CancellationToken.None);
+        Assert.Equal(before,await Fingerprint(db));
+        Assert.Equal(1,await RestoreSql.Scalar<int>(db,"SELECT COUNT(*) FROM dbo.Params WHERE FileName='other.setting' AND BinaryData=0xAABB"));
+        Assert.Equal(1,await RestoreSql.Scalar<int>(db,"SELECT COUNT(*) FROM dbo.V8USERSMATKEYS WHERE KeyData=0x010203"));
+        await OneCUserSnapshot.Remove(db,id,CancellationToken.None);
     }
     [DomainSqlFact]
-    public async Task FailureOfTheNextOperationRollsBackTheWholeChain()
+    public async Task RecoveryBeforeSnapshotCommitDoesNotChangeUsers()
     {
         await using var fixture=await Fixture.Create();await using var db=await fixture.Open();
-        await Assert.ThrowsAsync<InputException>(()=>new RestorePipelineExecutor().Apply(db,fixture.Pipeline("CORP",new string('D',128)),fixture.Database,_=>{},CancellationToken.None));
-        Assert.Equal(@"\\OLD\first",await RestoreSql.Scalar<string>(db,"SELECT OSName FROM dbo.v8users WHERE Name='first'"));
-        Assert.Equal(@"\\OTHER\second",await RestoreSql.Scalar<string>(db,"SELECT OSName FROM dbo.v8users WHERE Name='second'"));
+        var before=await Fingerprint(db);
+        await OneCUserSnapshot.Restore(db,Guid.NewGuid().ToString("N"),CancellationToken.None);
+        Assert.Equal(before,await Fingerprint(db));
     }
 }

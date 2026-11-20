@@ -191,5 +191,5 @@ test('job details show post-restore operation counts without account data',()=>{
   const {ctx}=fixture([]);
   ctx.number=String;
   const markup=vm.runInContext('postRestoreResultsMarkup([{kind:"windows-domain",targetDomain:"CORP",changed:4,unchanged:2}])',ctx);
-  assert.match(markup,/Подмена домена → CORP: изменено 4, уже соответствовало 2/);
+  assert.match(markup,/Подмена домена → CORP: записано пользователей 4/);
 });
