@@ -75,13 +75,16 @@ public static partial class Rules
     {
         var owner = OwnerFromIdentity(identity);
         var parsed = ParseDatabase(database);
-        return owner is not null && parsed is not null && owner == parsed.OwnerKey;
+        return parsed is { IsTestContour: false } && ContainsOwner(parsed, owner);
     }
+
+    private static bool ContainsOwner(DatabaseName database, string? owner) => !string.IsNullOrEmpty(owner)
+        && $"{database.SourceKey}_dev_{database.OwnerKey}".Contains(owner, StringComparison.OrdinalIgnoreCase);
 
     public static bool CanAccessDatabase(DatabaseName? database, AppUser user) => database is not null &&
         (user.IsAdmin || (database.IsTestContour
             ? user.Kind == "domain" && user.CanRefreshTestContour
-            : database.OwnerKey == user.OwnerKey));
+            : ContainsOwner(database, user.OwnerKey)));
 
     public static string[] ValidateWindowsAdmins(string[]? names)
     {

@@ -344,7 +344,7 @@ public sealed class WorkflowTests
             input with {SourceDatabase=target.ToUpperInvariant()},
             input with {SourceDatabase="do_ke_dev_demo_owner"},
             input with {SourceDatabase="bp_gm_dev_missing"},
-            input with {Database=source,SourceDatabase=target},
+            input with {Database="bp_gm_dev_unrelated_owner",SourceDatabase=target},
             input with {BackupName="bp_gm.bak"}
         })
             Assert.Equal(HttpStatusCode.BadRequest,(await Send(developer,HttpMethod.Post,"/api/refresh",invalid)).StatusCode);
@@ -356,6 +356,8 @@ public sealed class WorkflowTests
         Assert.Equal(source,job.Request.SourceDatabase);
         Assert.Equal(target,job.Target);
         Assert.Empty(job.Request.BackupName);
+        Assert.Equal(HttpStatusCode.Accepted,(await Send(developer,HttpMethod.Post,"/api/refresh",
+            input with {Database=source,SourceDatabase=target})).StatusCode);
     }
 
     [Fact]

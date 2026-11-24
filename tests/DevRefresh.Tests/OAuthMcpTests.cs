@@ -38,11 +38,11 @@ public sealed class OAuthMcpTests
         public int Count {get;set;}
         public Task<int> Sessions(SqlSettings settings,string database,CancellationToken token)=>Task.FromResult(Count);
     }
-    private sealed class Gateway : ISqlGateway
+    private sealed class Gateway(string database = Database) : ISqlGateway
     {
         public Task<ConnectionResult> Test(SqlSettings settings,CancellationToken token)=>Task.FromResult(new ConnectionResult("TEST-SQL","test","test"));
         public Task<IReadOnlyList<SqlDatabaseInfo>> List(SqlSettings settings,CancellationToken token)=>Task.FromResult<IReadOnlyList<SqlDatabaseInfo>>(
-            [new(Database,"ONLINE"),new("bp_gm_dev_other_owner","ONLINE"),new("bp_gm_tk","ONLINE"),new("other_dev_other_owner","ONLINE")]);
+            [new(database,"ONLINE"),new("bp_gm_dev_other_owner","ONLINE"),new("bp_gm_tk","ONLINE"),new("other_dev_other_owner","ONLINE")]);
     }
     private sealed class Host : IDisposable
     {
@@ -53,9 +53,9 @@ public sealed class OAuthMcpTests
         public HttpClient Anonymous {get;}
         public string FullDirectory=>Path.Combine(App.DirectoryPath,"full");
         public string DtDirectory=>Path.Combine(App.DirectoryPath,"dt");
-        public Host(bool syntheticNegotiate=false)
+        public Host(bool syntheticNegotiate=false, string database=Database)
         {
-            App=new(){McpEnabled=true,SyntheticNegotiate=syntheticNegotiate,SqlGateway=new Gateway(),RefreshInspector=Inspector};
+            App=new(){McpEnabled=true,SyntheticNegotiate=syntheticNegotiate,SqlGateway=new Gateway(database),RefreshInspector=Inspector};
             Anonymous=App.Client();Browser=Domain();
             using var admin=App.Client();
             var session=admin.GetFromJsonAsync<JsonObject>("/api/session").GetAwaiter().GetResult()!;
@@ -286,6 +286,28 @@ public sealed class OAuthMcpTests
         var job=Assert.Single(host.Store.GetJobs());Assert.Equal(effective=="dt",job.Request.UseDt);
         Assert.False(job.Request.ResolveLatestBackup);Assert.Equal("bp_gm_19-11-2026"+extension,job.Request.BackupName);
         Assert.Equal(Account,job.Actor);Assert.Equal(Sid,job.Request.Selection!.Subject);
+    }
+
+    [Theory]
+    [InlineData("bp_gm_dev_edt_demo_owner")]
+    [InlineData("bp_gm_dev_demo_owner_edt")]
+    public async Task AccountSubstringGrantsTheSameListAndRestoreAccessInBrowserAndMcp(string database)
+    {
+        using var host=new Host(database:database);var tokens=await host.Tokens();
+        await File.WriteAllTextAsync(Path.Combine(host.FullDirectory,"bp_gm.bak"),"Synthetic archive; never restored");
+        var browser=(await host.Browser.GetFromJsonAsync<JsonObject>("/api/databases"))!["databases"]!.AsArray();
+        var mcp=Host.Payload(await host.Tool(tokens.Access,"list_databases"))["databases"]!.AsArray();
+        Assert.Equal(database,Assert.Single(browser)!["name"]!.GetValue<string>());
+        Assert.Equal(database,Assert.Single(mcp)!["name"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.OK,(await host.Browser.GetAsync("/api/refresh/options?database="+database)).StatusCode);
+        Assert.Equal(database,Host.Payload(await host.Tool(tokens.Access,"get_restore_options",new{database}))["database"]!.GetValue<string>());
+        var plan=Host.Payload(await host.Tool(tokens.Access,"prepare_restore",new{database,mode="full"}));
+        var job=Host.Payload(await host.Tool(tokens.Access,"start_restore",new{plan_id=plan["planId"]!.GetValue<string>(),
+            confirm_replace=true,confirm_disconnect=false,request_id=Guid.NewGuid().ToString()}));
+        var id=job["id"]!.GetValue<string>();
+        Assert.Equal(database,Host.Payload(await host.Tool(tokens.Access,"get_job",new{job_id=id}))["target"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.OK,(await host.Browser.GetAsync("/api/jobs/"+id)).StatusCode);
+        Assert.Equal(database,Assert.Single(host.Store.GetJobs()).Target);
     }
 
     [Fact]

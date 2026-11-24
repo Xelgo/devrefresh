@@ -122,13 +122,24 @@ public sealed class ApplicationTests
     [Theory]
     [InlineData("CORP\\demo_owner", "bp_gm_dev_demo_owner", true)]
     [InlineData("corp\\DEMO_OWNER", "do_ke_dev_Demo_Owner", true)]
-    [InlineData("CORP\\demo_owner", "bp_gm_dev_demo_owner2", false)]
-    [InlineData("CORP\\demo_owner", "bp_gm_dev_other_owner_demo_owner", false)]
+    [InlineData("CORP\\demo_owner", "bp_gm_dev_demo_owner2", true)]
+    [InlineData("CORP\\demo_owner", "bp_gm_dev_other_owner_demo_owner", true)]
+    [InlineData("CORP\\demo_owner", "bp_gm_dev_edt_demo_owner", true)]
+    [InlineData("CORP\\demo_owner", "bp_gm_dev_demo_owner_edt", true)]
+    [InlineData("corp\\DEMO_OWNER", "BP_GM_DEV_EDT_Demo_Owner_COPY", true)]
+    [InlineData("CORP\\demo_owner", "demo_owner_dev_other_owner", true)]
+    [InlineData("CORP\\demo_owner", "bp_gm_dev_other_owner", false)]
     [InlineData("CORP\\demo_owner", "bp_gm_prod_demo_owner", false)]
     [InlineData("CORP\\demo_owner", "bp_dev_one_dev_demo_owner", false)]
+    [InlineData("CORP\\demo_owner", "bp_gm_devedt_demo_owner", false)]
+    [InlineData("CORP\\demo_owner", "demo_owner_tk", false)]
     [InlineData("demo_owner", "bp_gm_dev_demo_owner", false)]
-    public void OwnershipRequiresExactParsedOwner(string identity, string database, bool expected) =>
+    public void OwnershipMatchesAccountSubstringInAValidDeveloperDatabaseName(string identity, string database, bool expected)
+    {
         Assert.Equal(expected, Rules.Owns(identity, database));
+        var user = new AppUser(identity, "domain", false, Rules.OwnerFromIdentity(identity));
+        Assert.Equal(expected, Rules.CanAccessDatabase(Rules.ParseDatabase(database), user));
+    }
 
     [Fact]
     public async Task SetupIsOnceOnlyAndPasswordIsHashed()
@@ -242,12 +253,23 @@ public sealed class ApplicationTests
         developer.DefaultRequestHeaders.Add("Test-Domain", "CORP\\demo_owner");
         var result = await developer.GetFromJsonAsync<JsonObject>("/api/databases");
         var rows = result!["databases"]!.AsArray();
-        Assert.Equal(2, rows.Count);
+        Assert.Equal(new[]{"bp_gm_dev_demo_owner", "do_ke_dev_demo_owner", "bp_gm_dev_demo_owner2", "bp_gm_dev_other_owner_demo_owner"},
+            rows.Select(row => row!["name"]!.GetValue<string>()));
         Assert.Equal(9126805504L,rows[0]!["sizeBytes"]!.GetValue<long>());
         Assert.Null(rows[1]!["sizeBytes"]);
-        Assert.All(rows, row => Assert.Equal("demo_owner", row!["ownerKey"]!.GetValue<string>()));
+        Assert.Equal("other_owner_demo_owner", rows[3]!["ownerKey"]!.GetValue<string>());
         Assert.Equal("bp_gm.bak", rows[0]!["backup"]!["name"]!.GetValue<string>());
         Assert.Null(rows[1]!["backup"]);
+        var refresh = await Send(developer, HttpMethod.Post, "/api/refresh",
+            new { database = "bp_gm_dev_other_owner_demo_owner", confirmReplace = true });
+        Assert.Equal(HttpStatusCode.Accepted, refresh.StatusCode);
+        var jobId = (await refresh.Content.ReadFromJsonAsync<JsonObject>())!["id"]!.GetValue<string>();
+        Assert.Equal(HttpStatusCode.OK, (await developer.GetAsync("/api/jobs/" + jobId)).StatusCode);
+        using var unrelated = app.Client();
+        unrelated.DefaultRequestHeaders.Add("Test-Domain", "CORP\\unrelated_owner");
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(unrelated, HttpMethod.Post, "/api/refresh",
+            new { database = "bp_gm_dev_other_owner_demo_owner", confirmReplace = true })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await unrelated.GetAsync("/api/jobs/" + jobId)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await developer.GetAsync("/api/admin/settings")).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await Send(developer, HttpMethod.Put, "/api/admin/settings", Settings(app.DirectoryPath))).StatusCode);
     }
