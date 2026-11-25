@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 using DevRefresh;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
@@ -84,6 +85,21 @@ public sealed class IbcmdCreateSqlTests
         Assert.Equal(1,await RestoreSql.Scalar<int>(db,"SELECT COUNT(*) FROM sys.tables WHERE name='Config'"));
         Assert.Empty(Directory.EnumerateFiles(app.DirectoryPath,"*.bak",SearchOption.AllDirectories));
         Assert.Contains("IbcmdVersion",job.Result);Assert.NotNull(job.ReadyAt);
+        Assert.True(JsonNode.Parse(job.Result!)!["IbcmdWorkingDirectoryCleaned"]!.GetValue<bool>());
+        Assert.False(Directory.Exists(Path.Combine(app.DirectoryPath,"ibcmd","dt-"+job.Id)));
+        Assert.Contains(app.Services.GetRequiredService<Store>().GetExecutionReport(job.Id)!.Stages,
+            stage=>stage.Name=="Удаление временных файлов IBCMD");
+    }
+
+    [IbcmdSqlFact]
+    public async Task FailedDtKeepsItsWorkingDirectoryForDiagnostics()
+    {
+        await using var fixture=new SqlFixture();await fixture.Create(true);
+        using var app=new Factory();using var initialize=app.Client();
+        var job=await RunJob(app,fixture,false);
+        Assert.Equal("Failed",job.Status);Assert.Null(job.ReadyAt);
+        Assert.True(Directory.Exists(Path.Combine(app.DirectoryPath,"ibcmd","dt-"+job.Id)));
+        Assert.Null(job.Result);
     }
     [IbcmdSqlFact]
     public async Task MissingSqlCreatePermissionFailsBeforeDeletingTheTarget()

@@ -316,6 +316,7 @@ async function openJob(id) {
     ${["refresh", "shrink-build"].includes(job.kind) ? jobFileSizesMarkup(job.executionReport,job.backgroundStatus) : ""}
     ${job.result ? job.kind === "analysis" ? `<p>${esc(job.result.configuration)} ${esc(job.result.configurationVersion)} · ${number(job.result.tableCount)} таблиц · ${mb(job.result.usedMB)}</p><p>Временная база удалена. Результаты анализа сохранены.</p>` : job.kind === "preview" ? `<p>План проверен. Временная база удалена.</p>${countsMarkup(job.result)}` : job.result.shrinkBackup ? `<p>Готовый архив ${esc(job.result.shrinkBackup.name)} · ${esc(formatSize(job.result.shrinkBackup.size))}. Данные на ${esc(shrinkDataDate(job.result.shrinkBackup.dataDate))}.</p>` : job.result.restoreMode === "dt" ? `<p>База восстановлена из ${esc(job.result.backup)} через IBCMD ${esc(job.result.ibcmdVersion)}.${sqlCheck ? ` Проверка SQL-базы ${esc(sqlCheck)}.` : ""}</p>` : job.result.restoreMode === "prepared-shrink" ? `<p>Восстановлена готовая Shrink-копия. Данные на ${esc(shrinkDataDate(job.result.shrinkDataDate))}.</p>` : `<p>${job.sourceDatabase ? "База обновлена копией другой Dev-базы." : "Бэкап восстановлен непосредственно в целевую базу."} ПД не обрабатывались. Сокращение: ${job.result.shrink ? "да" : "нет"}.${sqlCheck ? ` Проверка SQL-базы ${esc(sqlCheck)}.` : ""}</p>${countsMarkup(job.result)}` : ""}
     ${postRestoreResultsMarkup(job.result?.postRestoreOperations)}
+    ${ibcmdCleanupMarkup(job.result)}
     <div class="dialog-actions"><button class="button" data-close="job-dialog">Закрыть</button></div>`;
   dialog.showModal();
 }
@@ -323,6 +324,13 @@ async function openJob(id) {
 function postRestoreResultsMarkup(operations) {
   if (!operations?.length) return "";
   return `<h3>Операции после восстановления</h3>${operations.map(operation=>`<p>Подмена домена → ${esc(operation.targetDomain)}: записано пользователей ${number(operation.changed)}.</p>`).join("")}`;
+}
+
+function ibcmdCleanupMarkup(result) {
+  if (result?.restoreMode !== "dt" || typeof result.ibcmdWorkingDirectoryCleaned !== "boolean") return "";
+  return result.ibcmdWorkingDirectoryCleaned
+    ? `<p>Временные файлы IBCMD удалены.</p>`
+    : `<div class="notice"><p>База восстановлена, но временные файлы IBCMD удалить не удалось. Подробности — в журнале сервера.</p></div>`;
 }
 
 async function openRefreshDialog(row) {

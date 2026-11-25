@@ -58,9 +58,12 @@ public sealed partial class WorkflowService
             }
             operations=await pipelineExecutor.Apply(settings,job.Request.Pipeline,target,job.Id,progress,token);
             await using(var restored=await sql.Open(settings,target,token))await CheckDeveloperCopy(restored,target,settings,progress,token);
+            progress("Удаление временных файлов IBCMD");
+            var workingDirectoryCleaned=IbcmdWorkspaceCleanup.TryDelete(root,job.Id,logger);
             var result=new {Database=target,Backup=backup.Name,RestoreMode="dt",DtDataDate=backup.BackupDate,
                 IbcmdVersion=version.ToString(),Shrink=false,PersonalDataProcessed=false,
-                SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0,PostRestoreOperations=operations};
+                SqlCheck=settings.RunDbccCheckDb?"passed":"skipped",TotalRows=0,PostRestoreOperations=operations,
+                IbcmdWorkingDirectoryCleaned=workingDirectoryCleaned};
             store.MarkDatabaseReady(job.Id,result);return new(result);
         }
         catch(OneCRecoveryException){holdClosed=true;throw;}

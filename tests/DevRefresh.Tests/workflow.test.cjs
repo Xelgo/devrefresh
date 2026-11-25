@@ -193,3 +193,14 @@ test('job details show post-restore operation counts without account data',()=>{
   const markup=vm.runInContext('postRestoreResultsMarkup([{kind:"windows-domain",targetDomain:"CORP",changed:4,unchanged:2}])',ctx);
   assert.match(markup,/Подмена домена → CORP: записано пользователей 4/);
 });
+
+test('DT details distinguish removed temporary files from a nonfatal cleanup warning',()=>{
+  const {ctx}=fixture([]);
+  const cleaned=vm.runInContext('ibcmdCleanupMarkup({restoreMode:"dt",ibcmdWorkingDirectoryCleaned:true})',ctx);
+  assert.match(cleaned,/Временные файлы IBCMD удалены/);
+  const failed=vm.runInContext('ibcmdCleanupMarkup({restoreMode:"dt",ibcmdWorkingDirectoryCleaned:false})',ctx);
+  assert.match(failed,/База восстановлена, но временные файлы IBCMD удалить не удалось/);
+  assert.match(failed,/в журнале сервера/);
+  assert.equal(vm.runInContext('ibcmdCleanupMarkup({restoreMode:"dt"})',ctx),'');
+  assert.equal(vm.runInContext('ibcmdCleanupMarkup({restoreMode:"full",ibcmdWorkingDirectoryCleaned:false})',ctx),'');
+});
